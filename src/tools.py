@@ -1,0 +1,912 @@
+from fastmcp import FastMCP
+from . import db
+from . import embeddings
+from . import models
+from datetime import datetime
+from typing import Optional
+
+
+def register_tools(mcp: FastMCP) -> None:
+
+    @mcp.tool
+    def add_project(name: str, path: str, description: str = "") -> dict:
+        """Create a new project node in the knowledge graph.
+
+        Args:
+            name: Unique name for the project
+            path: File system path to the project directory
+            description: Optional description of the project
+
+        Returns:
+            dict with project_id on success, or error dict on failure
+        """
+        try:
+            conn = db.get_connection()
+            existing = db.get_project_by_name(conn, name)
+            if existing:
+                return {
+                    "error": f"Project '{name}' already exists",
+                    "project_id": existing["id"],
+                }
+            project_id = db.add_project(conn, name, path, description)
+            return {"project_id": project_id, "name": name, "path": path}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def add_session(
+        project_name: str,
+        summary: str,
+        files_touched: list[str],
+        project_path: Optional[str] = None,
+    ) -> dict:
+        """Create a new session linked to a project.
+
+        If the project doesn't exist, it will be auto-created.
+        For new projects, project_path is required.
+
+        Args:
+            project_name: Name of the project (will be created if doesn't exist)
+            summary: Brief summary of what happened in the session
+            files_touched: List of file paths that were modified or accessed
+            project_path: Required if project doesn't exist - path to project directory
+
+        Returns:
+            dict with session_id on success, or error dict on failure
+        """
+        try:
+            conn = db.get_connection()
+            project = db.get_project_by_name(conn, project_name)
+
+            if not project:
+                if not project_path:
+                    return {
+                        "error": f"Project '{project_name}' doesn't exist. Provide project_path to auto-create it."
+                    }
+                project_id = db.add_project(conn, project_name, project_path)
+            else:
+                project_id = project["id"]
+
+            session_id = db.add_session(conn, project_id, summary, files_touched)
+            return {"session_id": session_id, "project_id": project_id}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def close_session(session_id: str, ended_at: Optional[str] = None) -> dict:
+        """Close a session and update its end timestamp.
+
+        Also creates or updates the DailyActivity node for the session's date.
+
+        Args:
+            session_id: ID of the session to close
+            ended_at: Optional ISO 8601 timestamp. If not provided, uses current time.
+
+        Returns:
+            dict with success status or error dict on failure
+        """
+        try:
+            conn = db.get_connection()
+            session = db.get_session_by_id(conn, session_id)
+            if not session:
+                return {"error": f"Session '{session_id}' not found"}
+
+            result = db.close_session(conn, session_id, ended_at)
+            db.link_session_to_daily_activity(conn, session_id)
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def log_error(session_id: str, message: str, context: str, file: str) -> dict:
+        """Log an error that occurred during a session.
+
+        Creates an Error node with embedded message for semantic search.
+
+        Args:
+            session_id: ID of the session where the error occurred
+            message: The error message
+            context: Additional context about what was happening
+            file: The file where the error occurred
+
+        Returns:
+            dict with error_id on success, or error dict on failure
+        """
+        try:
+            conn = db.get_connection()
+            session = db.get_session_by_id(conn, session_id)
+            if not session:
+                return {"error": f"Session '{session_id}' not found"}
+
+            message_embedding = embeddings.embed(message)
+            error_id = db.add_error(
+                conn,
+                session["project_id"],
+                session_id,
+                message,
+                context,
+                file,
+                message_embedding,
+            )
+            return {"error_id": error_id}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def log_solution(error_id: str, description: str, code_snippet: str = "") -> dict:
+        """Log a solution for a previously logged error.
+
+        Args:
+            error_id: ID of the error this solution addresses
+            description: Description of how the error was solved
+            code_snippet: Optional code that was used to fix the issue
+
+        Returns:
+            dict with solution_id on success, or error dict on failure
+        """
+        try:
+            conn = db.get_connection()
+            solution_id = db.add_solution(conn, error_id, description, code_snippet)
+            return {"solution_id": solution_id}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def add_concept(title: str, content: str, tags: list[str] = []) -> dict:
+        """Add a new concept to the knowledge graph.
+
+        Concepts are semantic knowledge entries that can be linked to sessions.
+
+        Args:
+            title: Short title for the concept
+            content: Detailed explanation of the concept
+            tags: List of tags for categorization
+
+        Returns:
+            dict with concept_id on success, or error dict on failure
+        """
+        try:
+            conn = db.get_connection()
+            embedding = embeddings.embed(f"{title}: {content}")
+            concept_id = db.add_concept(conn, title, content, tags, embedding)
+            return {"concept_id": concept_id}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def link_concept_to_session(concept_id: str, session_id: str) -> dict:
+        """Link a concept to a session.
+
+        Creates a REFERENCES relationship from session to concept.
+
+        Args:
+            concept_id: ID of the concept to link
+            session_id: ID of the session to link
+
+        Returns:
+            dict with success status or error dict on failure
+        """
+        try:
+            conn = db.get_connection()
+            return db.link_concept_to_session(conn, concept_id, session_id)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def search(query: str, top_k: int = 5) -> dict:
+        """Search the knowledge graph for relevant information.
+
+        Performs semantic search over concepts, then traverses the graph
+        to find related sessions, errors, and solutions.
+
+        Results are ranked by: 70% similarity, 20% recency, 10% context richness.
+
+        Args:
+            query: Natural language search query
+            top_k: Number of top results to return (default 5)
+
+        Returns:
+            dict with concepts, sessions, errors, and solutions
+        """
+        try:
+            conn = db.get_connection()
+            query_embedding = embeddings.embed(query)
+
+            all_concepts = db.get_all_concept_embeddings(conn)
+            if not all_concepts:
+                return {"concepts": [], "sessions": [], "errors": [], "solutions": []}
+
+            scored_concepts = []
+            for concept in all_concepts:
+                if concept["embedding"]:
+                    sim = embeddings.cosine_similarity(query_embedding, concept["embedding"])
+                    scored_concepts.append(
+                        {
+                            "id": concept["id"],
+                            "title": concept["title"],
+                            "content": concept["content"],
+                            "similarity": sim,
+                        }
+                    )
+
+            scored_concepts.sort(key=lambda x: x["similarity"], reverse=True)
+            top_concept_ids = [c["id"] for c in scored_concepts[:top_k]]
+
+            concepts = db.get_concepts_by_ids(conn, top_concept_ids)
+            sessions = db.get_sessions_referencing_concepts(conn, top_concept_ids)
+            session_ids = [s["id"] for s in sessions]
+            errors = db.get_errors_for_sessions(conn, session_ids)
+            error_ids = [e["id"] for e in errors]
+            solutions = db.get_solutions_for_errors(conn, error_ids)
+
+            now = datetime.utcnow()
+            for session in sessions:
+                if session.get("started_at"):
+                    started = datetime.fromisoformat(
+                        session["started_at"].replace("Z", "+00:00").replace("+00:00", "")
+                    )
+                    days_old = (now - started).days
+                    session["recency_score"] = max(0, 1 - (days_old / 365))
+
+            for concept in concepts:
+                concept_obj = next((c for c in scored_concepts if c["id"] == concept["id"]), None)
+                if concept_obj:
+                    concept["similarity"] = concept_obj["similarity"]
+                    session_matches = [
+                        s
+                        for s in sessions
+                        if concept["id"]
+                        in [c.get("id") for c in db.get_concepts_by_ids(conn, [concept["id"]])]
+                    ]
+                    errors_for_concept = db.get_errors_for_sessions(
+                        conn, [s["id"] for s in session_matches]
+                    )
+                    solutions_for_errors = db.get_solutions_for_errors(
+                        conn, [e["id"] for e in errors_for_concept]
+                    )
+                    concept["context_score"] = min(
+                        1.0,
+                        len(errors_for_concept) * 0.1 + len(solutions_for_errors) * 0.15,
+                    )
+
+            for concept in concepts:
+                similarity = concept.get("similarity", 0.5)
+                recency = concept.get("recency_score", 0.5)
+                context = concept.get("context_score", 0)
+                concept["rank_score"] = 0.7 * similarity + 0.2 * recency + 0.1 * context
+
+            concepts.sort(key=lambda x: x.get("rank_score", 0), reverse=True)
+
+            return {
+                "concepts": concepts,
+                "sessions": sessions,
+                "errors": errors,
+                "solutions": solutions,
+            }
+        except Exception as e:
+            return {
+                "error": str(e),
+                "concepts": [],
+                "sessions": [],
+                "errors": [],
+                "solutions": [],
+            }
+
+    @mcp.tool
+    def get_project_history(project_name: str) -> dict:
+        """Get all sessions, errors, and solutions for a project.
+
+        Args:
+            project_name: Name of the project to query
+
+        Returns:
+            dict with project info, sessions, errors, and solutions
+        """
+        try:
+            conn = db.get_connection()
+            return db.get_project_history(conn, project_name)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def get_error_solutions(error_message: str, top_k: int = 5) -> dict:
+        """Find similar errors and their solutions using semantic search.
+
+        Args:
+            error_message: Error message to search for
+            top_k: Number of similar errors to return (default 5)
+
+        Returns:
+            dict with matching errors and their solutions
+        """
+        try:
+            conn = db.get_connection()
+            query_embedding = embeddings.embed(error_message)
+
+            all_errors = db.get_all_error_embeddings(conn)
+            if not all_errors:
+                return {"errors": [], "solutions": []}
+
+            scored_errors = []
+            for error in all_errors:
+                if error["embedding"]:
+                    sim = embeddings.cosine_similarity(query_embedding, error["embedding"])
+                    scored_errors.append(
+                        {
+                            "id": error["id"],
+                            "message": error["message"],
+                            "similarity": sim,
+                        }
+                    )
+
+            scored_errors.sort(key=lambda x: x["similarity"], reverse=True)
+            top_error_ids = [e["id"] for e in scored_errors[:top_k]]
+
+            placeholders = ", ".join([f"'{eid}'" for eid in top_error_ids])
+            result = conn.execute(f"MATCH (e:Error) WHERE e.id IN [{placeholders}] RETURN e.*")
+            errors = db._result_to_dicts(result)
+
+            solutions = db.get_solutions_for_errors(conn, top_error_ids)
+
+            for error in errors:
+                error_obj = next((e for e in scored_errors if e["id"] == error["id"]), None)
+                if error_obj:
+                    error["similarity"] = error_obj["similarity"]
+
+            return {"errors": errors, "solutions": solutions}
+        except Exception as e:
+            return {"error": str(e), "errors": [], "solutions": []}
+
+    @mcp.tool
+    def update_concept(concept_id: str, new_content: str, new_title: Optional[str] = None) -> dict:
+        """Update a concept's content (re-embeds automatically).
+
+        Args:
+            concept_id: ID of the concept to update
+            new_content: New content for the concept
+            new_title: Optional new title for the concept
+
+        Returns:
+            dict with success status or error dict on failure
+        """
+        try:
+            conn = db.get_connection()
+            title = new_title or ""
+            new_embedding = embeddings.embed(f"{title}: {new_content}")
+            return db.update_concept(conn, concept_id, new_content, new_embedding, new_title)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def delete_concept(concept_id: str) -> dict:
+        """Delete a concept from the knowledge graph.
+
+        Also removes any REFERENCES relationships to sessions.
+
+        Args:
+            concept_id: ID of the concept to delete
+
+        Returns:
+            dict with success status
+        """
+        try:
+            conn = db.get_connection()
+            return db.delete_concept(conn, concept_id)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def list_projects() -> dict:
+        """List all projects in the knowledge graph.
+
+        Returns:
+            dict with list of projects sorted by creation date
+        """
+        try:
+            conn = db.get_connection()
+            projects = db.list_projects(conn)
+            return {"projects": projects}
+        except Exception as e:
+            return {"error": str(e), "projects": []}
+
+    @mcp.tool
+    def get_recent_sessions(limit: int = 10) -> dict:
+        """Get the most recent sessions across all projects.
+
+        Args:
+            limit: Maximum number of sessions to return (default 10)
+
+        Returns:
+            dict with list of recent sessions
+        """
+        try:
+            conn = db.get_connection()
+            sessions = db.get_recent_sessions(conn, limit)
+            return {"sessions": sessions}
+        except Exception as e:
+            return {"error": str(e), "sessions": []}
+
+    @mcp.tool
+    def update_project(
+        project_id: str,
+        name: Optional[str] = None,
+        path: Optional[str] = None,
+        description: Optional[str] = None,
+        merge_project_id: Optional[str] = None,
+    ) -> dict:
+        """Update a project's metadata or merge with another project.
+
+        Args:
+            project_id: ID of the project to update
+            name: New name for the project
+            path: New path for the project
+            description: New description for the project
+            merge_project_id: If provided, merge this project into another project
+
+        Returns:
+            dict with success status or error dict on failure
+        """
+        try:
+            conn = db.get_connection()
+            return db.update_project(conn, project_id, name, path, description, merge_project_id)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def delete_old_sessions(days_to_keep: int = 30) -> dict:
+        """Delete old sessions and their errors/solutions (keeps concepts).
+
+        Smart cleanup that preserves learned concepts while removing old session data.
+
+        Args:
+            days_to_keep: Number of days of sessions to keep (default 30)
+
+        Returns:
+            dict with deletion statistics
+        """
+        try:
+            conn = db.get_connection()
+            return db.delete_old_sessions(conn, days_to_keep)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def get_session_details(session_id: str) -> dict:
+        """Get full session info including errors, solutions, and linked concepts.
+
+        Args:
+            session_id: ID of the session to retrieve
+
+        Returns:
+            dict with session, errors, solutions, and concepts
+        """
+        try:
+            conn = db.get_connection()
+            return db.get_session_with_details(conn, session_id)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def get_error_details(error_id: str) -> dict:
+        """Get error with all its solutions.
+
+        Args:
+            error_id: ID of the error to retrieve
+
+        Returns:
+            dict with error and solutions
+        """
+        try:
+            conn = db.get_connection()
+            return db.get_error_with_solutions(conn, error_id)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def get_concept_details(concept_id: str) -> dict:
+        """Get concept with all sessions that reference it.
+
+        Args:
+            concept_id: ID of the concept to retrieve
+
+        Returns:
+            dict with concept and linked sessions
+        """
+        try:
+            conn = db.get_connection()
+            return db.get_concept_with_sessions(conn, concept_id)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def get_daily_activity(date: str, project_id: str) -> dict:
+        """Get daily activity for a specific date and project.
+
+        Args:
+            date: Date in YYYY-MM-DD format
+            project_id: ID of the project
+
+        Returns:
+            dict with daily activity or error if not found
+        """
+        try:
+            conn = db.get_connection()
+            activity = db.get_daily_activity_by_date(conn, date, project_id)
+            if activity:
+                return {"activity": activity}
+            return {"error": f"No activity found for {date} in project {project_id}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def search_by_tag(tag: str) -> dict:
+        """Find concepts by tag (non-semantic search).
+
+        Args:
+            tag: Tag to search for
+
+        Returns:
+            dict with list of matching concepts
+        """
+        try:
+            conn = db.get_connection()
+            concepts = db.search_concepts_by_tag(conn, tag)
+            return {"concepts": concepts, "count": len(concepts)}
+        except Exception as e:
+            return {"error": str(e), "concepts": []}
+
+    @mcp.tool
+    def get_project_stats(project_id: str) -> dict:
+        """Get comprehensive statistics for a project.
+
+        Returns session count, error count, resolution rate, top files with errors, etc.
+
+        Args:
+            project_id: ID of the project
+
+        Returns:
+            dict with full project statistics
+        """
+        try:
+            conn = db.get_connection()
+            return db.get_project_statistics(conn, project_id)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def update_session_summary(session_id: str, summary: str) -> dict:
+        """Update a session's summary.
+
+        Args:
+            session_id: ID of the session to update
+            summary: New summary text
+
+        Returns:
+            dict with success status
+        """
+        try:
+            conn = db.get_connection()
+            return db.update_session_summary(conn, session_id, summary)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def add_tag_to_concept(concept_id: str, tag: str) -> dict:
+        """Add a tag to a concept without re-embedding.
+
+        Args:
+            concept_id: ID of the concept
+            tag: Tag to add
+
+        Returns:
+            dict with updated tags
+        """
+        try:
+            conn = db.get_connection()
+            return db.add_tag_to_concept(conn, concept_id, tag)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def remove_tag_from_concept(concept_id: str, tag: str) -> dict:
+        """Remove a tag from a concept without re-embedding.
+
+        Args:
+            concept_id: ID of the concept
+            tag: Tag to remove
+
+        Returns:
+            dict with updated tags
+        """
+        try:
+            conn = db.get_connection()
+            return db.remove_tag_from_concept(conn, concept_id, tag)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def delete_project(project_id: str) -> dict:
+        """Delete a project and all its sessions, errors, and solutions.
+
+        Warning: This is a cascade delete and cannot be undone.
+
+        Args:
+            project_id: ID of the project to delete
+
+        Returns:
+            dict with deletion statistics
+        """
+        try:
+            conn = db.get_connection()
+            return db.delete_project_cascade(conn, project_id)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def batch_add_concepts(concepts: list[dict]) -> dict:
+        """Add multiple concepts at once.
+
+        Each concept dict should have: title, content, and optionally tags.
+
+        Args:
+            concepts: List of concept dicts with title, content, tags
+
+        Returns:
+            dict with list of created concept IDs
+        """
+        try:
+            conn = db.get_connection()
+            return db.batch_add_concepts(conn, concepts, embeddings.embed)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def batch_link_concepts(concept_ids: list[str], session_id: str) -> dict:
+        """Link multiple concepts to a session at once.
+
+        Args:
+            concept_ids: List of concept IDs to link
+            session_id: ID of the session to link to
+
+        Returns:
+            dict with linked and failed lists
+        """
+        try:
+            conn = db.get_connection()
+            return db.batch_link_concepts_to_session(conn, concept_ids, session_id)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def get_unlinked_concepts() -> dict:
+        """Find concepts that are not linked to any session.
+
+        Returns:
+            dict with list of unlinked concepts
+        """
+        try:
+            conn = db.get_connection()
+            concepts = db.get_unlinked_concepts(conn)
+            return {"concepts": concepts, "count": len(concepts)}
+        except Exception as e:
+            return {"error": str(e), "concepts": []}
+
+    @mcp.tool
+    def get_concepts_by_project(project_id: str) -> dict:
+        """Get all concepts linked to a project's sessions.
+
+        Args:
+            project_id: ID of the project
+
+        Returns:
+            dict with list of concepts
+        """
+        try:
+            conn = db.get_connection()
+            concepts = db.get_concepts_for_project(conn, project_id)
+            return {"concepts": concepts, "count": len(concepts)}
+        except Exception as e:
+            return {"error": str(e), "concepts": []}
+
+    @mcp.tool
+    def get_project_errors_by_type(project_id: str, similarity_threshold: float = 0.85) -> dict:
+        """Cluster project errors by similarity to find common error patterns.
+
+        Args:
+            project_id: ID of the project
+            similarity_threshold: Minimum similarity to group errors (default 0.85)
+
+        Returns:
+            dict with error clusters
+        """
+        try:
+            conn = db.get_connection()
+            return db.cluster_errors_by_similarity(conn, project_id, similarity_threshold)
+        except Exception as e:
+            return {"error": str(e), "clusters": []}
+
+    @mcp.tool
+    def get_learning_progress(project_id: str) -> dict:
+        """Track concept growth and activity over time for a project.
+
+        Args:
+            project_id: ID of the project
+
+        Returns:
+            dict with monthly data and totals
+        """
+        try:
+            conn = db.get_connection()
+            return db.get_concept_growth_over_time(conn, project_id)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def get_most_referenced_concepts(limit: int = 10) -> dict:
+        """Get the most referenced concepts across all sessions.
+
+        Args:
+            limit: Maximum number of concepts to return (default 10)
+
+        Returns:
+            dict with list of concepts and their reference counts
+        """
+        try:
+            conn = db.get_connection()
+            concepts = db.get_most_referenced_concepts(conn, limit)
+            return {"concepts": concepts}
+        except Exception as e:
+            return {"error": str(e), "concepts": []}
+
+    @mcp.tool
+    def unlink_concept_from_session(concept_id: str, session_id: str) -> dict:
+        """Remove a concept reference from a session.
+
+        Args:
+            concept_id: ID of the concept
+            session_id: ID of the session
+
+        Returns:
+            dict with success status
+        """
+        try:
+            conn = db.get_connection()
+            return db.unlink_concept_from_session(conn, concept_id, session_id)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def get_session_errors(session_id: str) -> dict:
+        """Get all errors for a specific session.
+
+        Args:
+            session_id: ID of the session
+
+        Returns:
+            dict with list of errors
+        """
+        try:
+            conn = db.get_connection()
+            errors = db.get_errors_for_session(conn, session_id)
+            return {"errors": errors, "count": len(errors)}
+        except Exception as e:
+            return {"error": str(e), "errors": []}
+
+    @mcp.tool
+    def get_session_concepts(session_id: str) -> dict:
+        """Get all concepts linked to a specific session.
+
+        Args:
+            session_id: ID of the session
+
+        Returns:
+            dict with list of concepts
+        """
+        try:
+            conn = db.get_connection()
+            concepts = db.get_concepts_for_session(conn, session_id)
+            return {"concepts": concepts, "count": len(concepts)}
+        except Exception as e:
+            return {"error": str(e), "concepts": []}
+
+    @mcp.tool
+    def get_errors_without_solutions(project_id: Optional[str] = None) -> dict:
+        """Find unresolved errors (errors without solutions).
+
+        Args:
+            project_id: Optional project ID to filter by
+
+        Returns:
+            dict with list of unresolved errors
+        """
+        try:
+            conn = db.get_connection()
+            errors = db.get_unresolved_errors(conn, project_id)
+            return {"errors": errors, "count": len(errors)}
+        except Exception as e:
+            return {"error": str(e), "errors": []}
+
+    @mcp.tool
+    def get_recent_errors(limit: int = 10) -> dict:
+        """Get the most recent errors across all projects.
+
+        Args:
+            limit: Maximum number of errors to return (default 10)
+
+        Returns:
+            dict with list of recent errors
+        """
+        try:
+            conn = db.get_connection()
+            errors = db.get_recent_errors(conn, limit)
+            return {"errors": errors}
+        except Exception as e:
+            return {"error": str(e), "errors": []}
+
+    @mcp.tool
+    def delete_session(session_id: str) -> dict:
+        """Delete a session and all its errors and solutions.
+
+        Warning: This is a cascade delete and cannot be undone.
+
+        Args:
+            session_id: ID of the session to delete
+
+        Returns:
+            dict with deletion statistics
+        """
+        try:
+            conn = db.get_connection()
+            return db.delete_session_cascade(conn, session_id)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def get_project_daily_activities(project_id: str) -> dict:
+        """Get all daily activities for a project.
+
+        Args:
+            project_id: ID of the project
+
+        Returns:
+            dict with list of daily activities
+        """
+        try:
+            conn = db.get_connection()
+            activities = db.get_daily_activities_for_project(conn, project_id)
+            return {"activities": activities, "count": len(activities)}
+        except Exception as e:
+            return {"error": str(e), "activities": []}
+
+    @mcp.tool
+    def get_daily_summary(date: str) -> dict:
+        """Get aggregated summary for a specific date across all projects.
+
+        Args:
+            date: Date in YYYY-MM-DD format
+
+        Returns:
+            dict with total sessions, errors, and per-project breakdown
+        """
+        try:
+            conn = db.get_connection()
+            return db.get_daily_summary(conn, date)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def update_daily_activity(activity_id: str, summary: str) -> dict:
+        """Update a daily activity's summary.
+
+        Args:
+            activity_id: ID of the daily activity
+            summary: New summary text
+
+        Returns:
+            dict with success status
+        """
+        try:
+            conn = db.get_connection()
+            return db.update_daily_activity_summary(conn, activity_id, summary)
+        except Exception as e:
+            return {"error": str(e)}
