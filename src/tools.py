@@ -3,8 +3,40 @@ from . import db
 from . import embeddings
 from . import models
 from datetime import datetime, timezone
+import re
 from time import perf_counter
 from typing import Optional
+
+
+SEARCH_WEIGHTS = {
+    "similarity": 0.55,
+    "recency": 0.2,
+    "context": 0.15,
+    "keyword": 0.1,
+}
+
+STOP_WORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "into",
+    "that",
+    "this",
+    "what",
+    "when",
+    "where",
+    "how",
+    "why",
+    "use",
+    "using",
+}
+
+
+def _tokenize(value: str) -> set[str]:
+    tokens = re.findall(r"[a-zA-Z0-9_]+", value.lower())
+    return {t for t in tokens if len(t) >= 3 and t not in STOP_WORDS}
 
 
 def register_tools(mcp: FastMCP) -> None:
@@ -214,9 +246,7 @@ def register_tools(mcp: FastMCP) -> None:
             overall_start = perf_counter()
             conn = db.get_connection()
             query_embedding = embeddings.embed(query)
-            query_words = {
-                word.lower() for word in query.replace("_", " ").split() if len(word.strip()) >= 3
-            }
+            query_words = _tokenize(query)
 
             all_concepts = db.get_all_concept_embeddings(conn)
             if not all_concepts:
@@ -236,7 +266,8 @@ def register_tools(mcp: FastMCP) -> None:
                     )
 
             scored_concepts.sort(key=lambda x: x["similarity"], reverse=True)
-            top_concept_ids = [c["id"] for c in scored_concepts[:top_k]]
+            candidate_k = min(max(top_k * 5, top_k), len(scored_concepts))
+            top_concept_ids = [c["id"] for c in scored_concepts[:candidate_k]]
 
             concepts = db.get_concepts_by_ids(conn, top_concept_ids)
             sessions = db.get_sessions_referencing_concepts(conn, top_concept_ids)
@@ -291,21 +322,25 @@ def register_tools(mcp: FastMCP) -> None:
                     concept["recency_score"] = concept_recency
 
                     keyword_score = 0.0
+                    title_score = 0.0
                     if query_words:
-                        concept_text_words = set(
-                            (concept.get("title", "") + " " + concept.get("content", ""))
-                            .lower()
-                            .replace("_", " ")
-                            .split()
-                        )
-                        overlap = len(query_words.intersection(concept_text_words))
-                        keyword_score = min(1.0, overlap / max(1, len(query_words)))
+                        title_tokens = _tokenize(concept.get("title", ""))
+                        content_tokens = _tokenize(concept.get("content", ""))
+
+                        if title_tokens:
+                            title_overlap = len(query_words.intersection(title_tokens))
+                            title_score = min(1.0, title_overlap / max(1, len(query_words)))
+
+                        content_overlap = len(query_words.intersection(content_tokens))
+                        content_score = min(1.0, content_overlap / max(1, len(query_words)))
+                        keyword_score = min(1.0, 0.7 * title_score + 0.3 * content_score)
 
                     concept["context_score"] = min(
                         1.0,
                         len(errors_for_concept) * 0.1 + len(solutions_for_errors) * 0.15,
                     )
                     concept["keyword_score"] = keyword_score
+                    concept["title_score"] = title_score
 
             for concept in concepts:
                 similarity = concept.get("similarity", 0.5)
@@ -313,10 +348,14 @@ def register_tools(mcp: FastMCP) -> None:
                 context = concept.get("context_score", 0)
                 keyword = concept.get("keyword_score", 0)
                 concept["rank_score"] = (
-                    0.6 * similarity + 0.2 * recency + 0.1 * context + 0.1 * keyword
+                    SEARCH_WEIGHTS["similarity"] * similarity
+                    + SEARCH_WEIGHTS["recency"] * recency
+                    + SEARCH_WEIGHTS["context"] * context
+                    + SEARCH_WEIGHTS["keyword"] * keyword
                 )
 
             concepts.sort(key=lambda x: x.get("rank_score", 0), reverse=True)
+            concepts = concepts[:top_k]
 
             metrics = {
                 "query_ms": round((perf_counter() - overall_start) * 1000, 2),

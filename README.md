@@ -105,10 +105,12 @@ Add to your OpenCode configuration:
 | `search` | Semantic search over knowledge graph |
 
 `search` now uses a hybrid rank score:
-- 60% semantic similarity
+- 55% semantic similarity
 - 20% recency
-- 10% context richness (related errors/solutions)
+- 15% context richness (related errors/solutions)
 - 10% keyword overlap
+
+Keyword overlap prioritizes title matches over content matches for better precision.
 
 `search` responses also include a `metrics` object with timing and result counts.
 

@@ -19,6 +19,8 @@ All notable changes to this project are documented in this file.
 - Updated project statistics queries to correctly pass `$pid` parameters.
 - Updated `add_concept` tool signature to avoid mutable default arguments.
 - Updated README with hybrid ranking details, metrics output, and console-script usage.
+- Tuned hybrid search weights to 55/20/15/10 (similarity/recency/context/keyword).
+- Prioritized keyword title matches over content-only matches in `search` ranking.
 
 ### Fixed
 - Fixed startup behavior by removing import-time embedding warmup side effects.
