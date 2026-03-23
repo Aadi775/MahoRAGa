@@ -1100,6 +1100,15 @@ def cluster_errors_by_similarity(
         )
     project_errors = [e for e in project_errors if e.get("embedding")]
 
+    cluster_limit = 300
+    cluster_warning = None
+    if len(project_errors) > cluster_limit:
+        original_size = len(project_errors)
+        project_errors = project_errors[:cluster_limit]
+        cluster_warning = (
+            f"cluster input capped at {cluster_limit} errors from {original_size} candidates"
+        )
+
     clusters = []
     used = set()
 
@@ -1132,7 +1141,12 @@ def cluster_errors_by_similarity(
                 }
             )
 
-    return {"clusters": clusters, "total_clustered": sum(c["member_count"] for c in clusters)}
+    return {
+        "clusters": clusters,
+        "total_clustered": sum(c["member_count"] for c in clusters),
+        "warning": cluster_warning,
+        "input_size": len(project_errors),
+    }
 
 
 def get_concept_growth_over_time(conn: kuzu.Connection, project_id: str) -> dict:
