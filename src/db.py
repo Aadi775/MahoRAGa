@@ -153,9 +153,15 @@ def init_schema(conn: kuzu.Connection) -> None:
                 summary STRING,
                 session_ids STRING,
                 errors_count INT64,
+                resolved_errors_count INT64,
                 PRIMARY KEY (id)
             )
         """)
+        
+    try:
+        conn.execute("ALTER TABLE DailyActivity ADD resolved_errors_count INT64 DEFAULT 0")
+    except Exception:
+        pass
 
     if "HAS_PROJECT" not in existing_rel_tables:
         conn.execute("CREATE REL TABLE HAS_PROJECT(FROM Session TO Project)")
@@ -466,7 +472,8 @@ def _update_or_create_daily_activity(conn: kuzu.Connection, session: dict) -> No
                 project_id: $project_id,
                 summary: $summary,
                 session_ids: $session_ids,
-                errors_count: $errors_count
+                errors_count: $errors_count,
+                resolved_errors_count: 0
             })""",
             {
                 "id": da_id,
@@ -625,6 +632,17 @@ def add_solution(
     conn.execute(
         "MATCH (sol:Solution {id: $sol_id}), (e:Error {id: $eid}) CREATE (sol)-[:SOLVES]->(e)",
         {"sol_id": solution_id, "eid": error_id},
+    )
+
+    conn.execute(
+        """MATCH (e:Error {id: $eid})-[:OCCURRED_IN]->(s:Session)-[:CONTRIBUTES_TO]->(da:DailyActivity)
+           WITH da
+           MATCH (s2:Session)-[:CONTRIBUTES_TO]->(da)
+           MATCH (e2:Error)-[:OCCURRED_IN]->(s2)
+           WHERE EXISTS { MATCH (sol:Solution)-[:SOLVES]->(e2) }
+           WITH da, count(DISTINCT e2) as res_count
+           SET da.resolved_errors_count = res_count""",
+        {"eid": error_id}
     )
 
     return solution_id
@@ -1381,28 +1399,31 @@ def get_concept_growth_over_time(conn: kuzu.Connection, project_id: str) -> dict
         row = result.get_next()
         monthly_data.append({"month": row[0], "concepts_added": row[1]})
 
-    session_result = conn.execute(
-        """MATCH (s:Session {project_id: $pid})
-           WITH substring(s.started_at, 0, 7) as month, count(s) as sessions
-           RETURN month, sessions ORDER BY month""",
+    da_result = conn.execute(
+        """MATCH (da:DailyActivity {project_id: $pid})
+           RETURN substring(da.date, 0, 7) as month, da.session_ids, da.resolved_errors_count
+           ORDER BY month""",
         {"pid": project_id},
     )
+
+    monthly_sessions = {}
+    monthly_resolved = {}
+    while da_result.has_next():
+        row = da_result.get_next()
+        month = row[0]
+        sids = _parse_json_field(row[1])
+        res_count = row[2] if row[2] is not None else 0
+        
+        monthly_sessions[month] = monthly_sessions.get(month, 0) + len(sids)
+        monthly_resolved[month] = monthly_resolved.get(month, 0) + res_count
 
     session_data = []
-    while session_result.has_next():
-        row = session_result.get_next()
-        session_data.append({"month": row[0], "sessions_completed": row[1]})
+    for month, count in monthly_sessions.items():
+        session_data.append({"month": month, "sessions_completed": count})
 
-    resolved_result = conn.execute(
-        """MATCH (s:Session {project_id: $pid})<-[:OCCURRED_IN]-(e:Error)<-[:SOLVES]-(sol:Solution)
-           WITH substring(s.started_at, 0, 7) as month, count(DISTINCT e) as resolved
-           RETURN month, resolved ORDER BY month""",
-        {"pid": project_id},
-    )
     resolved_data = []
-    while resolved_result.has_next():
-        row = resolved_result.get_next()
-        resolved_data.append({"month": row[0], "errors_resolved": row[1]})
+    for month, count in monthly_resolved.items():
+        resolved_data.append({"month": month, "errors_resolved": count})
 
     month_map = {}
     for m in monthly_data:
@@ -1551,6 +1572,42 @@ def delete_session_cascade(conn: kuzu.Connection, session_id: str) -> dict:
                MATCH (sol:Solution {error_id: error_id})
                DETACH DELETE sol""",
             {"error_ids": error_ids},
+        )
+
+    da_result = conn.execute(
+        """MATCH (s:Session {id: $sid})-[:CONTRIBUTES_TO]->(da:DailyActivity)
+           RETURN da.id, da.session_ids, da.errors_count, da.resolved_errors_count""",
+        {"sid": session_id}
+    )
+    if da_result.has_next():
+        row = da_result.get_next()
+        da_id = row[0]
+        da_session_ids = _parse_json_field(row[1])
+        da_errors_count = row[2]
+        da_resolved_count = row[3] if row[3] is not None else 0
+        
+        if session_id in da_session_ids:
+            da_session_ids.remove(session_id)
+            
+        res_err_result = conn.execute(
+            """MATCH (e:Error {session_id: $sid})
+               WHERE EXISTS { MATCH (sol:Solution)-[:SOLVES]->(e) }
+               RETURN count(e)""",
+            {"sid": session_id}
+        )
+        resolved_to_subtract = res_err_result.get_next()[0] if res_err_result.has_next() else 0
+        
+        conn.execute(
+            """MATCH (da:DailyActivity {id: $da_id})
+               SET da.session_ids = $session_ids, 
+                   da.errors_count = $errors_count,
+                   da.resolved_errors_count = $res_count""",
+            {
+                "da_id": da_id, 
+                "session_ids": json.dumps(da_session_ids), 
+                "errors_count": max(0, da_errors_count - len(error_ids)),
+                "res_count": max(0, da_resolved_count - resolved_to_subtract)
+            }
         )
 
     conn.execute("MATCH (e:Error {session_id: $sid}) DETACH DELETE e", {"sid": session_id})

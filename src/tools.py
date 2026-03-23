@@ -207,6 +207,9 @@ def register_tools(mcp: FastMCP) -> None:
             dict with solution_id on success, or error dict on failure
         """
         try:
+            if _is_blank(description):
+                return {"error": "description cannot be empty"}
+
             conn = db.get_connection()
             solution_id = db.add_solution(conn, error_id, description, code_snippet)
             return {"solution_id": solution_id}
@@ -529,6 +532,11 @@ def register_tools(mcp: FastMCP) -> None:
             dict with success status or error dict on failure
         """
         try:
+            if _is_blank(new_content):
+                return {"error": "new_content cannot be empty"}
+            if new_title is not None and _is_blank(new_title):
+                return {"error": "new_title cannot be empty"}
+
             conn = db.get_connection()
             concept = db.get_concept_by_id(conn, concept_id)
             if not concept:
@@ -610,6 +618,13 @@ def register_tools(mcp: FastMCP) -> None:
             dict with success status or error dict on failure
         """
         try:
+            if merge_project_id and project_id == merge_project_id:
+                return {"error": "Cannot merge a project into itself"}
+            if name is not None and _is_blank(name):
+                return {"error": "name cannot be empty"}
+            if path is not None and _is_blank(path):
+                return {"error": "path cannot be empty"}
+
             conn = db.get_connection()
             return db.update_project(conn, project_id, name, path, description, merge_project_id)
         except Exception as e:
@@ -758,6 +773,8 @@ def register_tools(mcp: FastMCP) -> None:
             dict with success status
         """
         try:
+            if _is_blank(summary):
+                return {"error": "summary cannot be empty"}
             conn = db.get_connection()
             return db.update_session_summary(conn, session_id, summary)
         except Exception as e:
@@ -828,6 +845,14 @@ def register_tools(mcp: FastMCP) -> None:
             dict with list of created concept IDs
         """
         try:
+            if not concepts:
+                return {"error": "concepts list cannot be empty"}
+            for i, c in enumerate(concepts):
+                if _is_blank(c.get("title")):
+                    return {"error": f"Concept at index {i} has empty title"}
+                if _is_blank(c.get("content")):
+                    return {"error": f"Concept at index {i} has empty content"}
+
             conn = db.get_connection()
             return db.batch_add_concepts(conn, concepts, embeddings.embed_batch)
         except Exception as e:
@@ -1086,6 +1111,8 @@ def register_tools(mcp: FastMCP) -> None:
             dict with success status
         """
         try:
+            if _is_blank(summary):
+                return {"error": "summary cannot be empty"}
             conn = db.get_connection()
             return db.update_daily_activity_summary(conn, activity_id, summary)
         except Exception as e:

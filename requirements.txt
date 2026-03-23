@@ -1,0 +1,6 @@
+kuzu>=0.4.0
+fastmcp>=2.0.0
+sentence-transformers>=2.2.0
+numpy>=1.24.0
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
