@@ -482,16 +482,8 @@ def link_session_to_daily_activity(conn: kuzu.Connection, session_id: str) -> No
         da_rows = _result_to_dicts(result)
         if da_rows:
             da_id = da_rows[0]["id"]
-            existing_rel = conn.execute(
-                """MATCH (s:Session {id: $sid})-[r:CONTRIBUTES_TO]->(da:DailyActivity {id: $da_id})
-                   RETURN count(r)""",
-                {"sid": session_id, "da_id": da_id},
-            )
-            rel_count = existing_rel.get_next()[0] if existing_rel.has_next() else 0
-            if rel_count > 0:
-                return
             conn.execute(
-                "MATCH (s:Session {id: $sid}), (da:DailyActivity {id: $da_id}) CREATE (s)-[:CONTRIBUTES_TO]->(da)",
+                "MATCH (s:Session {id: $sid}), (da:DailyActivity {id: $da_id}) MERGE (s)-[:CONTRIBUTES_TO]->(da)",
                 {"sid": session_id, "da_id": da_id},
             )
 
