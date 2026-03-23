@@ -278,6 +278,14 @@ def register_tools(mcp: FastMCP) -> None:
             error_ids = [e["id"] for e in errors]
             solutions = db.get_solutions_for_errors(conn, error_ids)
 
+            errors_by_session: dict[str, list[dict]] = {}
+            for err in errors:
+                errors_by_session.setdefault(err.get("session_id", ""), []).append(err)
+
+            solutions_by_error: dict[str, list[dict]] = {}
+            for sol in solutions:
+                solutions_by_error.setdefault(sol.get("error_id", ""), []).append(sol)
+
             now = datetime.now(timezone.utc)
             session_recency: dict[str, float] = {}
             for session in sessions:
@@ -308,13 +316,14 @@ def register_tools(mcp: FastMCP) -> None:
                 if concept_obj:
                     concept["similarity"] = concept_obj["similarity"]
                     session_match_ids = concept_session_map.get(concept["id"], [])
-                    session_matches = [s for s in sessions if s["id"] in session_match_ids]
-                    errors_for_concept = db.get_errors_for_sessions(
-                        conn, [s["id"] for s in session_matches]
-                    )
-                    solutions_for_errors = db.get_solutions_for_errors(
-                        conn, [e["id"] for e in errors_for_concept]
-                    )
+                    errors_for_concept = [
+                        err for sid in session_match_ids for err in errors_by_session.get(sid, [])
+                    ]
+                    solutions_for_errors = [
+                        sol
+                        for err in errors_for_concept
+                        for sol in solutions_by_error.get(err.get("id", ""), [])
+                    ]
 
                     concept_recency = 0.0
                     if session_match_ids:
