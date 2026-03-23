@@ -705,7 +705,11 @@ def get_project_history(conn: kuzu.Connection, project_name: str) -> dict:
 
 
 def get_recent_sessions(conn: kuzu.Connection, limit: int = 10) -> list[dict]:
-    result = conn.execute(f"MATCH (s:Session) RETURN s.* ORDER BY s.started_at DESC LIMIT {limit}")
+    safe_limit = max(1, int(limit))
+    result = conn.execute(
+        "MATCH (s:Session) RETURN s.* ORDER BY s.started_at DESC LIMIT $limit",
+        {"limit": safe_limit},
+    )
     sessions = _result_to_dicts(result)
     for s in sessions:
         s["files_touched"] = _parse_json_field(s.get("files_touched"))
@@ -1190,11 +1194,13 @@ def get_concept_growth_over_time(conn: kuzu.Connection, project_id: str) -> dict
 
 
 def get_most_referenced_concepts(conn: kuzu.Connection, limit: int = 10) -> list[dict]:
+    safe_limit = max(1, int(limit))
     result = conn.execute(
-        f"""MATCH (s:Session)-[:REFERENCES]->(c:Concept)
+        """MATCH (s:Session)-[:REFERENCES]->(c:Concept)
            RETURN c.id, c.title, count(s) as ref_count
            ORDER BY ref_count DESC
-           LIMIT {limit}"""
+           LIMIT $limit""",
+        {"limit": safe_limit},
     )
 
     concepts = []
@@ -1255,7 +1261,11 @@ def get_unresolved_errors(conn: kuzu.Connection, project_id: Optional[str] = Non
 
 
 def get_recent_errors(conn: kuzu.Connection, limit: int = 10) -> list[dict]:
-    result = conn.execute(f"MATCH (e:Error) RETURN e.* ORDER BY e.timestamp DESC LIMIT {limit}")
+    safe_limit = max(1, int(limit))
+    result = conn.execute(
+        "MATCH (e:Error) RETURN e.* ORDER BY e.timestamp DESC LIMIT $limit",
+        {"limit": safe_limit},
+    )
     return _result_to_dicts(result)
 
 
