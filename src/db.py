@@ -769,18 +769,54 @@ def delete_old_sessions(conn: kuzu.Connection, days_to_keep: int = 30) -> dict:
     deleted_solutions = 0
     deleted_sessions = len(session_ids)
 
-    for sid in session_ids:
-        error_result = conn.execute("MATCH (e:Error {session_id: $sid}) RETURN e.id", {"sid": sid})
-        error_ids = [row["id"] for row in _result_to_dicts(error_result)]
+    if not session_ids:
+        return {
+            "deleted_sessions": 0,
+            "deleted_errors": 0,
+            "deleted_solutions": 0,
+            "concepts_preserved": True,
+        }
 
-        for eid in error_ids:
-            conn.execute("MATCH (sol:Solution {error_id: $eid}) DELETE sol", {"eid": eid})
-            deleted_solutions += 1
+    error_result = conn.execute(
+        """UNWIND $session_ids AS session_id
+           MATCH (e:Error {session_id: session_id})
+           RETURN e.id""",
+        {"session_ids": session_ids},
+    )
+    error_ids = [row["id"] for row in _result_to_dicts(error_result)]
+    deleted_errors = len(error_ids)
 
-        conn.execute("MATCH (e:Error {session_id: $sid}) DETACH DELETE e", {"sid": sid})
-        deleted_errors += len(error_ids)
+    if error_ids:
+        solution_count_result = conn.execute(
+            """UNWIND $error_ids AS error_id
+               MATCH (sol:Solution {error_id: error_id})
+               RETURN count(sol)""",
+            {"error_ids": error_ids},
+        )
+        deleted_solutions = (
+            solution_count_result.get_next()[0] if solution_count_result.has_next() else 0
+        )
 
-        conn.execute("MATCH (s:Session {id: $sid}) DETACH DELETE s", {"sid": sid})
+        conn.execute(
+            """UNWIND $error_ids AS error_id
+               MATCH (sol:Solution {error_id: error_id})
+               DELETE sol""",
+            {"error_ids": error_ids},
+        )
+
+        conn.execute(
+            """UNWIND $session_ids AS session_id
+               MATCH (e:Error {session_id: session_id})
+               DETACH DELETE e""",
+            {"session_ids": session_ids},
+        )
+
+    conn.execute(
+        """UNWIND $session_ids AS session_id
+           MATCH (s:Session {id: session_id})
+           DETACH DELETE s""",
+        {"session_ids": session_ids},
+    )
 
     return {
         "deleted_sessions": deleted_sessions,
