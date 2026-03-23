@@ -67,7 +67,7 @@ def init_schema(conn: kuzu.Connection) -> None:
         pass
 
     if "Project" not in existing_node_tables:
-        conn.execute(f"""
+        conn.execute("""
             CREATE NODE TABLE Project(
                 id STRING,
                 name STRING,
