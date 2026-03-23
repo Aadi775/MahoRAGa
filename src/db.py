@@ -490,6 +490,40 @@ def add_error(
     file: str,
     message_embedding: list[float],
 ) -> str:
+    exact_result = conn.execute(
+        """MATCH (e:Error {
+               project_id: $project_id,
+               session_id: $session_id,
+               message: $message,
+               context: $context,
+               file: $file
+           })
+           RETURN e.id LIMIT 1""",
+        {
+            "project_id": project_id,
+            "session_id": session_id,
+            "message": message,
+            "context": context,
+            "file": file,
+        },
+    )
+    if exact_result.has_next():
+        return exact_result.get_next()[0]
+
+    near_result = conn.execute(
+        """MATCH (e:Error {project_id: $project_id, file: $file})
+           RETURN e.id, e.message_embedding""",
+        {"project_id": project_id, "file": file},
+    )
+    while near_result.has_next():
+        row = near_result.get_next()
+        existing_embedding = list(row[1]) if row[1] else []
+        if (
+            existing_embedding
+            and emb.cosine_similarity(message_embedding, existing_embedding) >= 0.995
+        ):
+            return row[0]
+
     error_id = str(uuid.uuid4())
     timestamp = datetime.now(timezone.utc).isoformat()
 

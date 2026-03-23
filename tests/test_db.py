@@ -179,6 +179,34 @@ class TestErrorOperations:
         assert len(errors) >= 1
         assert any(e["id"] == sample_error for e in errors)
 
+    def test_add_error_deduplicates_exact_repeats(
+        self, test_connection, sample_session, sample_project, mock_embed
+    ):
+        from src import db
+
+        msg = "RepeatableError"
+        emb = mock_embed(msg)
+        first = db.add_error(
+            test_connection,
+            sample_project,
+            sample_session,
+            msg,
+            "ctx",
+            "file.py",
+            emb,
+        )
+        second = db.add_error(
+            test_connection,
+            sample_project,
+            sample_session,
+            msg,
+            "ctx",
+            "file.py",
+            emb,
+        )
+
+        assert first == second
+
 
 class TestSolutionOperations:
     def test_add_solution(self, test_connection, sample_error):
