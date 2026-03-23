@@ -922,10 +922,9 @@ def delete_concept(conn: kuzu.Connection, concept_id: str) -> dict:
         return {"error": f"Concept {concept_id} not found"}
 
     conn.execute(
-        "MATCH (s:Session)-[r:REFERENCES]->(c:Concept {id: $id}) DELETE r",
+        "MATCH (c:Concept {id: $id}) DETACH DELETE c",
         {"id": concept_id},
     )
-    conn.execute("MATCH (c:Concept {id: $id}) DELETE c", {"id": concept_id})
     return {"deleted": True}
 
 
@@ -1605,6 +1604,15 @@ def delete_session_cascade(conn: kuzu.Connection, session_id: str) -> dict:
            RETURN da.id, da.session_ids, da.errors_count, da.resolved_errors_count""",
         {"sid": session_id}
     )
+
+    res_err_result = conn.execute(
+        """MATCH (e:Error {session_id: $sid})
+           WHERE EXISTS { MATCH (sol:Solution)-[:SOLVES]->(e) }
+           RETURN count(e)""",
+        {"sid": session_id}
+    )
+    resolved_to_subtract = res_err_result.get_next()[0] if res_err_result.has_next() else 0
+
     if da_result.has_next():
         row = da_result.get_next()
         da_id = row[0]
@@ -1614,14 +1622,6 @@ def delete_session_cascade(conn: kuzu.Connection, session_id: str) -> dict:
         
         if session_id in da_session_ids:
             da_session_ids.remove(session_id)
-            
-        res_err_result = conn.execute(
-            """MATCH (e:Error {session_id: $sid})
-               WHERE EXISTS { MATCH (sol:Solution)-[:SOLVES]->(e) }
-               RETURN count(e)""",
-            {"sid": session_id}
-        )
-        resolved_to_subtract = res_err_result.get_next()[0] if res_err_result.has_next() else 0
         
         conn.execute(
             """MATCH (da:DailyActivity {id: $da_id})
@@ -1642,6 +1642,9 @@ def delete_session_cascade(conn: kuzu.Connection, session_id: str) -> dict:
     conn.execute("MATCH (s:Session {id: $sid})-[r:HAS_PROJECT]->() DELETE r", {"sid": session_id})
     conn.execute(
         "MATCH (s:Session {id: $sid})-[r:CONTRIBUTES_TO]->() DELETE r", {"sid": session_id}
+    )
+    conn.execute(
+        "MATCH (s:Session {id: $sid})-[r:USES_ARTIFACT]->() DELETE r", {"sid": session_id}
     )
     conn.execute("MATCH (s:Session {id: $sid}) DETACH DELETE s", {"sid": session_id})
 
