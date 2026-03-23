@@ -242,11 +242,22 @@ def update_project(
         )
         session_ids = [row["id"] for row in _result_to_dicts(result)]
 
-        for sid in session_ids:
-            conn.execute(
-                "MATCH (s:Session {id: $sid}) SET s.project_id = $new_id",
-                {"sid": sid, "new_id": merge_project_id},
-            )
+        conn.execute(
+            "MATCH (s:Session {project_id: $old_id}) SET s.project_id = $new_id",
+            {"old_id": project_id, "new_id": merge_project_id},
+        )
+
+        conn.execute(
+            """MATCH (s:Session {project_id: $new_id})-[r:HAS_PROJECT]->(p:Project {id: $old_id})
+               DELETE r""",
+            {"old_id": project_id, "new_id": merge_project_id},
+        )
+
+        conn.execute(
+            """MATCH (s:Session {project_id: $new_id}), (p:Project {id: $new_id})
+               MERGE (s)-[:HAS_PROJECT]->(p)""",
+            {"new_id": merge_project_id},
+        )
 
         conn.execute(
             "MATCH (e:Error {project_id: $old_id}) SET e.project_id = $new_id",
@@ -256,6 +267,18 @@ def update_project(
         conn.execute(
             "MATCH (da:DailyActivity {project_id: $old_id}) SET da.project_id = $new_id",
             {"old_id": project_id, "new_id": merge_project_id},
+        )
+
+        conn.execute(
+            """MATCH (da:DailyActivity {project_id: $new_id})-[r:BELONGS_TO]->(p:Project {id: $old_id})
+               DELETE r""",
+            {"old_id": project_id, "new_id": merge_project_id},
+        )
+
+        conn.execute(
+            """MATCH (da:DailyActivity {project_id: $new_id}), (p:Project {id: $new_id})
+               MERGE (da)-[:BELONGS_TO]->(p)""",
+            {"new_id": merge_project_id},
         )
 
         conn.execute("MATCH (p:Project {id: $id}) DELETE p", {"id": project_id})

@@ -79,6 +79,36 @@ class TestProjectOperations:
         assert len(projects) >= 1
         assert any(p["id"] == sample_project for p in projects)
 
+    def test_merge_project_rewires_relationships(self, test_connection):
+        from src import db
+
+        p1 = db.add_project(test_connection, "p-old", "/tmp/p-old", "")
+        p2 = db.add_project(test_connection, "p-new", "/tmp/p-new", "")
+        s1 = db.add_session(test_connection, p1, "work", ["a.py"])
+        db.close_session(test_connection, s1)
+
+        merge = db.update_project(test_connection, p1, merge_project_id=p2)
+        assert merge.get("merged") is True
+
+        old_has = test_connection.execute(
+            """MATCH (s:Session {id: $sid})-[:HAS_PROJECT]->(p:Project {id: $pid}) RETURN count(p)""",
+            {"sid": s1, "pid": p1},
+        )
+        assert (old_has.get_next()[0] if old_has.has_next() else 0) == 0
+
+        new_has = test_connection.execute(
+            """MATCH (s:Session {id: $sid})-[:HAS_PROJECT]->(p:Project {id: $pid}) RETURN count(p)""",
+            {"sid": s1, "pid": p2},
+        )
+        assert (new_has.get_next()[0] if new_has.has_next() else 0) == 1
+
+        old_belongs = test_connection.execute(
+            """MATCH (da:DailyActivity {project_id: $new_pid})-[:BELONGS_TO]->(p:Project {id: $old_pid})
+               RETURN count(p)""",
+            {"new_pid": p2, "old_pid": p1},
+        )
+        assert (old_belongs.get_next()[0] if old_belongs.has_next() else 0) == 0
+
 
 class TestSessionOperations:
     def test_add_session(self, test_connection, sample_project):
