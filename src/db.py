@@ -234,8 +234,21 @@ def get_project_by_id(conn: kuzu.Connection, project_id: str) -> Optional[dict]:
     return None
 
 
-def list_projects(conn: kuzu.Connection) -> list[dict]:
-    result = conn.execute("MATCH (p:Project) RETURN p.* ORDER BY p.created_at DESC")
+def list_projects(
+    conn: kuzu.Connection, limit: Optional[int] = None, offset: int = 0
+) -> list[dict]:
+    safe_offset = max(0, int(offset))
+    if limit is None:
+        result = conn.execute(
+            "MATCH (p:Project) RETURN p.* ORDER BY p.created_at DESC SKIP $offset",
+            {"offset": safe_offset},
+        )
+    else:
+        safe_limit = max(1, int(limit))
+        result = conn.execute(
+            "MATCH (p:Project) RETURN p.* ORDER BY p.created_at DESC SKIP $offset LIMIT $limit",
+            {"offset": safe_offset, "limit": safe_limit},
+        )
     return _result_to_dicts(result)
 
 
@@ -1225,10 +1238,25 @@ def batch_link_concepts_to_session(
     return {"linked": linked, "failed": failed, "count": len(linked)}
 
 
-def get_unlinked_concepts(conn: kuzu.Connection) -> list[dict]:
-    result = conn.execute(
-        "MATCH (c:Concept) WHERE NOT EXISTS { MATCH (s:Session)-[:REFERENCES]->(c) } RETURN c.*"
-    )
+def get_unlinked_concepts(
+    conn: kuzu.Connection, limit: Optional[int] = None, offset: int = 0
+) -> list[dict]:
+    safe_offset = max(0, int(offset))
+    if limit is None:
+        result = conn.execute(
+            """MATCH (c:Concept)
+               WHERE NOT EXISTS { MATCH (s:Session)-[:REFERENCES]->(c) }
+               RETURN c.* SKIP $offset""",
+            {"offset": safe_offset},
+        )
+    else:
+        safe_limit = max(1, int(limit))
+        result = conn.execute(
+            """MATCH (c:Concept)
+               WHERE NOT EXISTS { MATCH (s:Session)-[:REFERENCES]->(c) }
+               RETURN c.* SKIP $offset LIMIT $limit""",
+            {"offset": safe_offset, "limit": safe_limit},
+        )
     concepts = _result_to_dicts(result)
     for c in concepts:
         c["tags"] = _parse_json_field(c.get("tags"))
@@ -1493,11 +1521,22 @@ def delete_session_cascade(conn: kuzu.Connection, session_id: str) -> dict:
     }
 
 
-def get_daily_activities_for_project(conn: kuzu.Connection, project_id: str) -> list[dict]:
-    result = conn.execute(
-        "MATCH (da:DailyActivity {project_id: $pid}) RETURN da.* ORDER BY da.date DESC",
-        {"pid": project_id},
-    )
+def get_daily_activities_for_project(
+    conn: kuzu.Connection, project_id: str, limit: Optional[int] = None, offset: int = 0
+) -> list[dict]:
+    safe_offset = max(0, int(offset))
+    if limit is None:
+        result = conn.execute(
+            "MATCH (da:DailyActivity {project_id: $pid}) RETURN da.* ORDER BY da.date DESC SKIP $offset",
+            {"pid": project_id, "offset": safe_offset},
+        )
+    else:
+        safe_limit = max(1, int(limit))
+        result = conn.execute(
+            """MATCH (da:DailyActivity {project_id: $pid})
+               RETURN da.* ORDER BY da.date DESC SKIP $offset LIMIT $limit""",
+            {"pid": project_id, "offset": safe_offset, "limit": safe_limit},
+        )
     activities = _result_to_dicts(result)
     for a in activities:
         a["session_ids"] = _parse_json_field(a.get("session_ids"))

@@ -235,6 +235,14 @@ async def test_stats_and_history_tools(test_connection):
     unresolved = await _call_tool_fn(mcp, "get_errors_without_solutions", project["project_id"])
     assert "errors" in unresolved
 
+    projects = await _call_tool_fn(mcp, "list_projects", 1, 0)
+    assert len(projects["projects"]) <= 1
+
+    activities = await _call_tool_fn(
+        mcp, "get_project_daily_activities", project["project_id"], 1, 0
+    )
+    assert len(activities["activities"]) <= 1
+
 
 @pytest.mark.asyncio
 async def test_search_returns_recency_and_rank_scores(test_connection):

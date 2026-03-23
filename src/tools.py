@@ -554,7 +554,7 @@ def register_tools(mcp: FastMCP) -> None:
             return {"error": str(e)}
 
     @mcp.tool
-    def list_projects() -> dict:
+    def list_projects(limit: int = 100, offset: int = 0) -> dict:
         """List all projects in the knowledge graph.
 
         Returns:
@@ -562,7 +562,7 @@ def register_tools(mcp: FastMCP) -> None:
         """
         try:
             conn = db.get_connection()
-            projects = db.list_projects(conn)
+            projects = db.list_projects(conn, _clamp_limit(limit, default=100, maximum=500), offset)
             return {"projects": projects}
         except Exception as e:
             return {"error": str(e), "projects": []}
@@ -836,7 +836,7 @@ def register_tools(mcp: FastMCP) -> None:
             return {"error": str(e)}
 
     @mcp.tool
-    def get_unlinked_concepts() -> dict:
+    def get_unlinked_concepts(limit: int = 100, offset: int = 0) -> dict:
         """Find concepts that are not linked to any session.
 
         Returns:
@@ -844,7 +844,9 @@ def register_tools(mcp: FastMCP) -> None:
         """
         try:
             conn = db.get_connection()
-            concepts = db.get_unlinked_concepts(conn)
+            concepts = db.get_unlinked_concepts(
+                conn, _clamp_limit(limit, default=100, maximum=500), offset
+            )
             return {"concepts": concepts, "count": len(concepts)}
         except Exception as e:
             return {"error": str(e), "concepts": []}
@@ -1020,7 +1022,7 @@ def register_tools(mcp: FastMCP) -> None:
             return {"error": str(e)}
 
     @mcp.tool
-    def get_project_daily_activities(project_id: str) -> dict:
+    def get_project_daily_activities(project_id: str, limit: int = 100, offset: int = 0) -> dict:
         """Get all daily activities for a project.
 
         Args:
@@ -1031,7 +1033,12 @@ def register_tools(mcp: FastMCP) -> None:
         """
         try:
             conn = db.get_connection()
-            activities = db.get_daily_activities_for_project(conn, project_id)
+            activities = db.get_daily_activities_for_project(
+                conn,
+                project_id,
+                _clamp_limit(limit, default=100, maximum=500),
+                offset,
+            )
             return {"activities": activities, "count": len(activities)}
         except Exception as e:
             return {"error": str(e), "activities": []}
