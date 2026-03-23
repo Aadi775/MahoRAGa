@@ -388,10 +388,11 @@ def register_tools(mcp: FastMCP) -> None:
 
                         if title_tokens:
                             title_overlap = len(query_words.intersection(title_tokens))
-                            title_score = min(1.0, title_overlap / max(1, len(query_words)))
+                            # Use min() so partial exact matches against long queries aren't penalized
+                            title_score = min(1.0, title_overlap / max(1, min(len(query_words), len(title_tokens))))
 
                         content_overlap = len(query_words.intersection(content_tokens))
-                        content_score = min(1.0, content_overlap / max(1, len(query_words)))
+                        content_score = min(1.0, content_overlap / max(1, min(len(query_words), len(content_tokens))))
                         keyword_score = min(1.0, 0.7 * title_score + 0.3 * content_score)
 
                     concept["context_score"] = min(

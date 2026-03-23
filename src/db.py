@@ -1295,14 +1295,18 @@ def batch_link_concepts_to_session(
     if not session:
         return {"error": f"Session {session_id} not found"}
 
-    linked = []
-    failed = []
-    for cid in concept_ids:
-        result = link_concept_to_session(conn, cid, session_id)
-        if "error" in result:
-            failed.append({"concept_id": cid, "error": result["error"]})
-        else:
-            linked.append(cid)
+    try:
+        result = conn.execute(
+            """UNWIND $concept_ids AS cid
+               MATCH (c:Concept {id: cid}), (s:Session {id: $sid})
+               CREATE (s)-[:REFERENCES]->(c)
+               RETURN c.id as id""",
+            {"concept_ids": concept_ids, "sid": session_id},
+        )
+        linked = [row["id"] for row in _result_to_dicts(result)]
+        failed = [{"concept_id": cid, "error": "Not found or linking failed"} for cid in concept_ids if cid not in linked]
+    except Exception as e:
+        return {"error": str(e)}
 
     return {"linked": linked, "failed": failed, "count": len(linked)}
 
@@ -1373,34 +1377,42 @@ def cluster_errors_by_similarity(
         )
 
     clusters = []
-    used = set()
-
-    for i, err in enumerate(project_errors):
-        if err["id"] in used:
-            continue
-
-        cluster_members = [err["id"]]
-        cluster_messages = [err["message"]]
-
-        for j, other in enumerate(project_errors):
-            if i != j and other["id"] not in used:
-                sim = emb.cosine_similarity(err["embedding"], other["embedding"])
-                if sim >= similarity_threshold:
-                    cluster_members.append(other["id"])
-                    cluster_messages.append(other["message"])
-                    used.add(other["id"])
-
-        used.add(err["id"])
-
-        if len(cluster_members) > 1:
-            clusters.append(
-                {
-                    "representative": err["message"],
-                    "member_count": len(cluster_members),
-                    "members": cluster_members,
-                    "messages": cluster_messages,
-                }
-            )
+    used_indices = set()
+    n = len(project_errors)
+    
+    if n > 0:
+        import numpy as np
+        emb_matrix = np.array([e["embedding"] for e in project_errors])
+        # L2 normalize
+        norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
+        norms[norms == 0] = 1e-10
+        emb_matrix = emb_matrix / norms
+        # compute all pairwise cosines
+        sim_matrix = np.dot(emb_matrix, emb_matrix.T)
+        
+        for i in range(n):
+            if i in used_indices:
+                continue
+            
+            # find all j where sim >= threshold
+            members_idx = np.where(sim_matrix[i] >= similarity_threshold)[0]
+            # filter out used
+            members_idx = [j for j in members_idx if j not in used_indices]
+            
+            if len(members_idx) > 1:
+                cluster_members = [project_errors[j]["id"] for j in members_idx]
+                cluster_messages = [project_errors[j]["message"] for j in members_idx]
+                clusters.append(
+                    {
+                        "representative": project_errors[i]["message"],
+                        "member_count": len(cluster_members),
+                        "members": cluster_members,
+                        "messages": cluster_messages,
+                    }
+                )
+                used_indices.update(members_idx)
+            else:
+                used_indices.add(i)
 
     return {
         "clusters": clusters,
