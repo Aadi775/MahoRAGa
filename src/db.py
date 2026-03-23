@@ -992,12 +992,23 @@ def delete_old_sessions(conn: kuzu.Connection, days_to_keep: int = 30) -> dict:
             {"session_ids": session_ids},
         )
 
+    da_result = conn.execute(
+        """UNWIND $session_ids AS session_id
+           MATCH (s:Session {id: session_id})-[:CONTRIBUTES_TO]->(da:DailyActivity)
+           RETURN DISTINCT da.id""",
+        {"session_ids": session_ids}
+    )
+    da_ids = [row["da.id"] for row in _result_to_dicts(da_result)]
+
     conn.execute(
         """UNWIND $session_ids AS session_id
            MATCH (s:Session {id: session_id})
            DETACH DELETE s""",
         {"session_ids": session_ids},
     )
+
+    for da_id in da_ids:
+        _recalculate_daily_activity(conn, da_id)
 
     return {
         "deleted_sessions": deleted_sessions,
@@ -1621,40 +1632,10 @@ def delete_session_cascade(conn: kuzu.Connection, session_id: str) -> dict:
 
     da_result = conn.execute(
         """MATCH (s:Session {id: $sid})-[:CONTRIBUTES_TO]->(da:DailyActivity)
-           RETURN da.id, da.session_ids, da.errors_count, da.resolved_errors_count""",
+           RETURN da.id""",
         {"sid": session_id}
     )
-
-    res_err_result = conn.execute(
-        """MATCH (e:Error {session_id: $sid})
-           WHERE EXISTS { MATCH (sol:Solution)-[:SOLVES]->(e) }
-           RETURN count(e)""",
-        {"sid": session_id}
-    )
-    resolved_to_subtract = res_err_result.get_next()[0] if res_err_result.has_next() else 0
-
-    if da_result.has_next():
-        row = da_result.get_next()
-        da_id = row[0]
-        da_session_ids = _parse_json_field(row[1])
-        da_errors_count = row[2]
-        da_resolved_count = row[3] if row[3] is not None else 0
-        
-        if session_id in da_session_ids:
-            da_session_ids.remove(session_id)
-        
-        conn.execute(
-            """MATCH (da:DailyActivity {id: $da_id})
-               SET da.session_ids = $session_ids, 
-                   da.errors_count = $errors_count,
-                   da.resolved_errors_count = $res_count""",
-            {
-                "da_id": da_id, 
-                "session_ids": json.dumps(da_session_ids), 
-                "errors_count": max(0, da_errors_count - len(error_ids)),
-                "res_count": max(0, da_resolved_count - resolved_to_subtract)
-            }
-        )
+    da_ids = [row["da.id"] for row in _result_to_dicts(da_result)]
 
     conn.execute("MATCH (e:Error {session_id: $sid}) DETACH DELETE e", {"sid": session_id})
 
@@ -1668,11 +1649,52 @@ def delete_session_cascade(conn: kuzu.Connection, session_id: str) -> dict:
     )
     conn.execute("MATCH (s:Session {id: $sid}) DETACH DELETE s", {"sid": session_id})
 
+    for da_id in da_ids:
+        _recalculate_daily_activity(conn, da_id)
+
     return {
         "deleted": True,
         "deleted_errors": len(error_ids),
         "deleted_solutions": deleted_solutions,
     }
+
+def _recalculate_daily_activity(conn: kuzu.Connection, da_id: str) -> None:
+    result = conn.execute(
+        """MATCH (s:Session)-[:CONTRIBUTES_TO]->(da:DailyActivity {id: $da_id})
+           RETURN s.id""", {"da_id": da_id}
+    )
+    sids = [row["s.id"] for row in _result_to_dicts(result)]
+    
+    if not sids:
+        conn.execute("MATCH (da:DailyActivity {id: $da_id}) DETACH DELETE da", {"da_id": da_id})
+        return
+        
+    error_res = conn.execute(
+        """MATCH (s:Session)-[:CONTRIBUTES_TO]->(da:DailyActivity {id: $da_id})
+           MATCH (e:Error)-[:OCCURRED_IN]->(s)
+           RETURN count(DISTINCT e)""", {"da_id": da_id}
+    )
+    err_count = error_res.get_next()[0] if error_res.has_next() else 0
+    
+    res_err_res = conn.execute(
+        """MATCH (s:Session)-[:CONTRIBUTES_TO]->(da:DailyActivity {id: $da_id})
+           MATCH (sol:Solution)-[:SOLVES]->(e:Error)-[:OCCURRED_IN]->(s)
+           RETURN count(DISTINCT e)""", {"da_id": da_id}
+    )
+    res_err_count = res_err_res.get_next()[0] if res_err_res.has_next() else 0
+    
+    conn.execute(
+        """MATCH (da:DailyActivity {id: $da_id})
+           SET da.session_ids = $sids, 
+               da.errors_count = $err_count, 
+               da.resolved_errors_count = $res_count""",
+        {
+            "da_id": da_id, 
+            "sids": json.dumps(sids), 
+            "err_count": err_count, 
+            "res_count": res_err_count
+        }
+    )
 
 
 def get_daily_activities_for_project(
