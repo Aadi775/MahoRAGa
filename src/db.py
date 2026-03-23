@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Any
 
-EMBEDDING_DIM = 384
+EMBEDDING_DIM = emb.EMBEDDING_DIM
 _DB_SINGLETON: Optional[kuzu.Database] = None
 _DB_SINGLETON_PATH: Optional[str] = None
 _SCHEMA_READY_PATHS: set[str] = set()
