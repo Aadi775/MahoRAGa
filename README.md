@@ -229,6 +229,107 @@ Then open [http://localhost:5173](http://localhost:5173).
 
 ---
 
+## Demos — How Agents Use MahoRAGa
+
+### 🟢 Demo 1: Basic Agent Session
+
+When an agent starts working on your project, it opens a session and logs everything it does:
+
+```
+Agent → add_session(project_name="my-api", summary="Fix auth middleware", files_touched=["src/auth.ts"])
+       ↳ Returns: { session_id: "abc-123" }
+
+Agent → log_error(session_id="abc-123", message="JWT expired during refresh", context="Token TTL was 0", file="src/auth.ts")
+       ↳ Returns: { error_id: "err-456" }
+
+Agent → log_solution(error_id="err-456", description="Set TTL to 3600s in config", code_snippet="config.jwt.ttl = 3600")
+       ↳ Returns: { solution_id: "sol-789" }
+
+Agent → add_concept(title="JWT Refresh Flow", content="Always check token expiry before API calls. Default TTL should be 1hr.", tags=["auth", "jwt"])
+       ↳ Returns: { concept_id: "con-012" }
+
+Agent → link_concept_to_session(concept_id="con-012", session_id="abc-123")
+Agent → close_session(session_id="abc-123")
+```
+
+The graph now holds a permanent record: **what went wrong, how it was fixed, and what was learned**.
+
+---
+
+### 🔍 Demo 2: Agent Recalls Past Knowledge
+
+A week later, the same (or different) agent hits a similar issue. Instead of starting from scratch:
+
+```
+Agent → search(query="JWT token expiry authentication")
+       ↳ Returns:
+         concepts: [{ title: "JWT Refresh Flow", similarity: 0.94, recency_score: 0.98 }]
+         sessions: [{ summary: "Fix auth middleware", files: ["src/auth.ts"] }]
+         errors:   [{ message: "JWT expired during refresh" }]
+         solutions:[{ description: "Set TTL to 3600s in config", code: "config.jwt.ttl = 3600" }]
+
+Agent → get_error_solutions(error_message="token has expired")
+       ↳ Returns 3 similar past errors ranked by semantic similarity, each with their solution
+```
+
+The agent immediately knows the fix without re-debugging. **Zero wasted time.**
+
+---
+
+### 📎 Demo 3: Attaching Artifacts
+
+Agents can persist files, logs, and configs as searchable artifacts:
+
+```
+Agent → add_artifact(
+          artifact_type="config",
+          title="Production JWT Config",
+          content="{ jwt: { ttl: 3600, algorithm: 'RS256', issuer: 'api.example.com' } }",
+          description="Auth service JWT configuration",
+          tags=["production", "auth", "config"]
+        )
+       ↳ Returns: { artifact_id: "art-345" }
+
+Agent → link_artifact_to_session(artifact_id="art-345", session_id="abc-123")
+Agent → search_artifacts_by_tag(tag="auth")
+       ↳ Returns: [{ title: "Production JWT Config", type: "config", ... }]
+```
+
+---
+
+### 📊 Demo 4: Project Analytics
+
+Agents (or you) can query high-level project intelligence:
+
+```
+Agent → get_project_history(project_name="my-api", limit=10)
+       ↳ Returns: last 10 sessions with all errors and solutions
+
+Agent → get_daily_summary(date="2026-03-24")
+       ↳ Returns: { total_sessions: 5, total_errors: 12, projects: [...] }
+
+Agent → get_learning_progress(project_name="my-api")
+       ↳ Returns: { errors_logged: 47, errors_resolved: 41, resolution_rate: 0.87 }
+```
+
+---
+
+### 🧹 Demo 5: Maintenance & Cleanup
+
+Keep the graph lean over time:
+
+```
+Agent → delete_old_sessions(days=30)
+       ↳ Deletes sessions older than 30 days
+       ↳ Automatically garbage-collects orphaned DailyActivity nodes
+       ↳ Preserves all Concepts (knowledge is never lost)
+
+Agent → get_unlinked_concepts(limit=20)
+       ↳ Find concepts not linked to any session (candidates for cleanup or review)
+```
+
+---
+
 ## License
 
 MIT — use it however you want.
