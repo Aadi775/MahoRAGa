@@ -488,6 +488,10 @@ def add_error(
 def add_solution(
     conn: kuzu.Connection, error_id: str, description: str, code_snippet: str = ""
 ) -> str:
+    error_result = conn.execute("MATCH (e:Error {id: $id}) RETURN e.id", {"id": error_id})
+    if not error_result.has_next():
+        raise ValueError(f"Error {error_id} not found")
+
     solution_id = str(uuid.uuid4())
     timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -556,7 +560,7 @@ def link_concept_to_session(conn: kuzu.Connection, concept_id: str, session_id: 
         return {"error": f"Session {session_id} not found"}
 
     conn.execute(
-        "MATCH (s:Session {id: $sid}), (c:Concept {id: $cid}) CREATE (s)-[:REFERENCES]->(c)",
+        "MATCH (s:Session {id: $sid}), (c:Concept {id: $cid}) MERGE (s)-[:REFERENCES]->(c)",
         {"sid": session_id, "cid": concept_id},
     )
 
@@ -747,6 +751,10 @@ def update_concept(
 
 
 def delete_concept(conn: kuzu.Connection, concept_id: str) -> dict:
+    concept = get_concept_by_id(conn, concept_id)
+    if not concept:
+        return {"error": f"Concept {concept_id} not found"}
+
     conn.execute(
         "MATCH (s:Session)-[r:REFERENCES]->(c:Concept {id: $id}) DELETE r",
         {"id": concept_id},
@@ -1033,23 +1041,47 @@ def delete_project_cascade(conn: kuzu.Connection, project_id: str) -> dict:
     deleted_errors = 0
     deleted_solutions = 0
 
-    for sid in session_ids:
-        error_result = conn.execute("MATCH (e:Error {session_id: $sid}) RETURN e.id", {"sid": sid})
+    if session_ids:
+        error_result = conn.execute(
+            """UNWIND $session_ids AS session_id
+               MATCH (e:Error {session_id: session_id})
+               RETURN e.id""",
+            {"session_ids": session_ids},
+        )
         error_ids = [row["id"] for row in _result_to_dicts(error_result)]
+        deleted_errors = len(error_ids)
 
-        for eid in error_ids:
-            conn.execute("MATCH (sol:Solution {error_id: $eid}) DELETE sol", {"eid": eid})
-            deleted_solutions += 1
+        if error_ids:
+            solution_count_result = conn.execute(
+                """UNWIND $error_ids AS error_id
+                   MATCH (sol:Solution {error_id: error_id})
+                   RETURN count(sol)""",
+                {"error_ids": error_ids},
+            )
+            deleted_solutions = (
+                solution_count_result.get_next()[0] if solution_count_result.has_next() else 0
+            )
 
-        conn.execute("MATCH (e:Error {session_id: $sid}) DELETE e", {"sid": sid})
-        deleted_errors += len(error_ids)
+            conn.execute(
+                """UNWIND $error_ids AS error_id
+                   MATCH (sol:Solution {error_id: error_id})
+                   DELETE sol""",
+                {"error_ids": error_ids},
+            )
+
+            conn.execute(
+                """UNWIND $session_ids AS session_id
+                   MATCH (e:Error {session_id: session_id})
+                   DELETE e""",
+                {"session_ids": session_ids},
+            )
 
         conn.execute(
-            "MATCH (s:Session {id: $sid})-[r:REFERENCES]->(c:Concept) DELETE r", {"sid": sid}
+            """UNWIND $session_ids AS session_id
+               MATCH (s:Session {id: session_id})
+               DETACH DELETE s""",
+            {"session_ids": session_ids},
         )
-        conn.execute("MATCH (s:Session {id: $sid})-[r:HAS_PROJECT]->() DELETE r", {"sid": sid})
-        conn.execute("MATCH (s:Session {id: $sid})-[r:CONTRIBUTES_TO]->() DELETE r", {"sid": sid})
-        conn.execute("MATCH (s:Session {id: $sid}) DELETE s", {"sid": sid})
 
     conn.execute(
         "MATCH (da:DailyActivity {project_id: $pid}) DETACH DELETE da", {"pid": project_id}
@@ -1065,12 +1097,24 @@ def delete_project_cascade(conn: kuzu.Connection, project_id: str) -> dict:
 
 
 def batch_add_concepts(conn: kuzu.Connection, concepts_data: list[dict], embed_func) -> dict:
+    if not concepts_data:
+        return {"concept_ids": [], "count": 0}
+
+    texts = [f"{cd.get('title', '')}: {cd.get('content', '')}" for cd in concepts_data]
+    try:
+        embeddings_batch = embed_func(texts)
+        if not isinstance(embeddings_batch, list) or (
+            embeddings_batch and not isinstance(embeddings_batch[0], list)
+        ):
+            raise TypeError("embed_func did not return batched embeddings")
+    except Exception:
+        embeddings_batch = [embed_func(text) for text in texts]
+
     concept_ids = []
-    for cd in concepts_data:
+    for cd, embedding in zip(concepts_data, embeddings_batch):
         title = cd.get("title", "")
         content = cd.get("content", "")
         tags = cd.get("tags", [])
-        embedding = embed_func(f"{title}: {content}")
         concept_id = add_concept(conn, title, content, tags, embedding)
         concept_ids.append(concept_id)
     return {"concept_ids": concept_ids, "count": len(concept_ids)}
@@ -1331,9 +1375,23 @@ def delete_session_cascade(conn: kuzu.Connection, session_id: str) -> dict:
     error_ids = [row["id"] for row in _result_to_dicts(error_result)]
 
     deleted_solutions = 0
-    for eid in error_ids:
-        conn.execute("MATCH (sol:Solution {error_id: $eid}) DELETE sol", {"eid": eid})
-        deleted_solutions += 1
+    if error_ids:
+        solution_count_result = conn.execute(
+            """UNWIND $error_ids AS error_id
+               MATCH (sol:Solution {error_id: error_id})
+               RETURN count(sol)""",
+            {"error_ids": error_ids},
+        )
+        deleted_solutions = (
+            solution_count_result.get_next()[0] if solution_count_result.has_next() else 0
+        )
+
+        conn.execute(
+            """UNWIND $error_ids AS error_id
+               MATCH (sol:Solution {error_id: error_id})
+               DELETE sol""",
+            {"error_ids": error_ids},
+        )
 
     conn.execute("MATCH (e:Error {session_id: $sid}) DETACH DELETE e", {"sid": session_id})
 

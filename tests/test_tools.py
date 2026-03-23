@@ -183,6 +183,10 @@ async def test_update_and_delete_tools(test_connection):
     )
     assert upd_concept.get("updated") is True
 
+    concepts_by_tag = await _call_tool_fn(mcp, "search_by_tag", "a")
+    updated = next(c for c in concepts_by_tag["concepts"] if c["id"] == concept["concept_id"])
+    assert updated["title"] == "title"
+
     delete_concept = await _call_tool_fn(mcp, "delete_concept", concept["concept_id"])
     assert delete_concept.get("deleted") is True
 
@@ -239,3 +243,55 @@ async def test_search_returns_recency_and_rank_scores(test_connection):
     assert "recency_score" in top
     assert "rank_score" in top
     assert "keyword_score" in top
+
+
+@pytest.mark.asyncio
+async def test_search_filters_sessions_and_errors_to_final_topk(test_connection):
+    mcp = FastMCP("test")
+    register_tools(mcp)
+
+    await _call_tool_fn(mcp, "add_project", "proj-filter", "/tmp/proj-filter", "desc")
+    s1 = await _call_tool_fn(mcp, "add_session", "proj-filter", "auth jwt refresh", ["a.py"])
+    s2 = await _call_tool_fn(mcp, "add_session", "proj-filter", "noise session", ["b.py"])
+
+    c1 = await _call_tool_fn(
+        mcp,
+        "add_concept",
+        "JWT refresh strategy",
+        "token refresh before expiry",
+        ["auth"],
+    )
+    c2 = await _call_tool_fn(
+        mcp,
+        "add_concept",
+        "Unrelated concept",
+        "misc unrelated notes",
+        ["misc"],
+    )
+
+    await _call_tool_fn(mcp, "link_concept_to_session", c1["concept_id"], s1["session_id"])
+    await _call_tool_fn(mcp, "link_concept_to_session", c2["concept_id"], s2["session_id"])
+
+    await _call_tool_fn(
+        mcp,
+        "log_error",
+        s1["session_id"],
+        "AuthError",
+        "during token refresh",
+        "a.py",
+    )
+    await _call_tool_fn(
+        mcp,
+        "log_error",
+        s2["session_id"],
+        "NoiseError",
+        "unrelated",
+        "b.py",
+    )
+
+    result = await _call_tool_fn(mcp, "search", "jwt refresh", 1)
+    assert len(result["concepts"]) == 1
+    assert result["concepts"][0]["id"] == c1["concept_id"]
+
+    assert all(sess["id"] == s1["session_id"] for sess in result["sessions"])
+    assert all(err["session_id"] == s1["session_id"] for err in result["errors"])

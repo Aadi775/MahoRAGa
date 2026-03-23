@@ -166,6 +166,12 @@ class TestSolutionOperations:
         assert len(solutions) >= 1
         assert any(s["id"] == sample_solution for s in solutions)
 
+    def test_add_solution_requires_existing_error(self, test_connection):
+        from src import db
+
+        with pytest.raises(ValueError):
+            db.add_solution(test_connection, "missing-error", "nope", "")
+
 
 class TestConceptOperations:
     def test_add_concept(self, test_connection, mock_embed):
@@ -208,6 +214,12 @@ class TestConceptOperations:
         concept = db.get_concept_by_id(test_connection, sample_concept)
         assert concept is None
 
+    def test_delete_concept_not_found(self, test_connection):
+        from src import db
+
+        result = db.delete_concept(test_connection, "missing-concept")
+        assert "error" in result
+
     def test_search_concepts_by_tag(self, test_connection, sample_concept):
         """Test searching concepts by tag."""
         from src import db
@@ -223,6 +235,22 @@ class TestConceptSessionLinking:
 
         result = db.link_concept_to_session(test_connection, sample_concept, sample_session)
         assert result["linked"] is True
+
+    def test_link_concept_to_session_is_idempotent(
+        self, test_connection, sample_concept, sample_session
+    ):
+        from src import db
+
+        db.link_concept_to_session(test_connection, sample_concept, sample_session)
+        db.link_concept_to_session(test_connection, sample_concept, sample_session)
+
+        result = test_connection.execute(
+            """MATCH (s:Session {id: $sid})-[r:REFERENCES]->(c:Concept {id: $cid})
+               RETURN count(r)""",
+            {"sid": sample_session, "cid": sample_concept},
+        )
+        count = result.get_next()[0] if result.has_next() else 0
+        assert count == 1
 
     def test_get_concepts_for_session(self, test_connection, sample_concept, sample_session):
         """Test getting concepts for a session."""

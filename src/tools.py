@@ -359,6 +359,19 @@ def register_tools(mcp: FastMCP) -> None:
             concepts.sort(key=lambda x: x.get("rank_score", 0), reverse=True)
             concepts = concepts[:top_k]
 
+            final_concept_ids = {c["id"] for c in concepts}
+            final_session_ids_from_concepts = {
+                sid
+                for cid, sid_list in concept_session_map.items()
+                if cid in final_concept_ids
+                for sid in sid_list
+            }
+            sessions = [s for s in sessions if s["id"] in final_session_ids_from_concepts]
+            final_session_ids = {s["id"] for s in sessions}
+            errors = [e for e in errors if e.get("session_id") in final_session_ids]
+            final_error_ids = {e["id"] for e in errors}
+            solutions = [sol for sol in solutions if sol.get("error_id") in final_error_ids]
+
             metrics = {
                 "query_ms": round((perf_counter() - overall_start) * 1000, 2),
                 "concept_candidates": len(all_concepts),
@@ -468,7 +481,11 @@ def register_tools(mcp: FastMCP) -> None:
         """
         try:
             conn = db.get_connection()
-            title = new_title or ""
+            concept = db.get_concept_by_id(conn, concept_id)
+            if not concept:
+                return {"error": f"Concept {concept_id} not found"}
+
+            title = new_title or concept.get("title", "")
             new_embedding = embeddings.embed(f"{title}: {new_content}")
             return db.update_concept(conn, concept_id, new_content, new_embedding, new_title)
         except Exception as e:
@@ -753,7 +770,7 @@ def register_tools(mcp: FastMCP) -> None:
         """
         try:
             conn = db.get_connection()
-            return db.batch_add_concepts(conn, concepts, embeddings.embed)
+            return db.batch_add_concepts(conn, concepts, embeddings.embed_batch)
         except Exception as e:
             return {"error": str(e)}
 
