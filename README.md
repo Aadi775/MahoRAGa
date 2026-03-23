@@ -1,246 +1,234 @@
-# MahoRAGa Knowledge Graph MCP Server
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.11+-blue?style=for-the-badge&logo=python&logoColor=white" />
+  <img src="https://img.shields.io/badge/MCP-Compatible-blueviolet?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/database-Kuzu%20Graph-00b4d8?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" />
+</p>
 
-A local Graph RAG knowledge base MCP server for Claude Code and any MCP-compatible agentic framework.
+<h1 align="center">🧠 MahoRAGa</h1>
 
-## Purpose
+<p align="center">
+  <b>Persistent, graph-powered memory for AI agents.</b><br>
+  <sub>A production-ready MCP server that gives Claude, Cursor, and any agentic framework long-term semantic recall.</sub>
+</p>
 
-Agent sessions start cold with no memory. This system provides persistent, structured, relational memory:
+---
 
-- Errors it hit and how it solved them
-- What it knows about each project
-- Files it touched in each session
-- Concepts it learned along the way
-- Daily activity tracking
+## Why MahoRAGa?
+
+Every AI agent session starts **cold** — no memory of past errors, solutions, or project context. MahoRAGa fixes that by providing a **local graph database** that agents can read and write to across sessions, creating a living knowledge base that grows smarter over time.
+
+- 🔁 **Never solve the same bug twice.** Errors and solutions are persisted and semantically searchable.
+- 🧩 **Cross-project knowledge.** Concepts learned in one project are instantly available in others.
+- 📊 **Activity intelligence.** Daily summaries, session histories, and project timelines — all queryable.
+- 🔒 **100% local.** Your data never leaves your machine. No API keys, no cloud dependencies.
+
+---
 
 ## Features
 
-- **Graph-based memory**: Uses Kuzu embedded graph database for structured knowledge storage
-- **Semantic search**: Embeds content using `all-MiniLM-L6-v2` for intelligent retrieval
-- **Hybrid ranking**: Combines semantic similarity with recency, context, and keyword overlap
-- **Relationship traversal**: Finds related sessions, errors, solutions from concept queries
-- **Daily activity tracking**: Automatically aggregates sessions into daily summaries
-- **Thread-safe**: New connection per call for safe async operation
-- **Fully local**: No external services required - everything runs on your machine
-- **Search observability**: Returns lightweight timing and result-count metrics per query
-- **Input safeguards**: Core tools validate required inputs and clamp unsafe limits
-- **Pagination support**: List-style tools support `limit` and `offset`
+| Category            | Highlights                                                                                    |
+| ------------------- | --------------------------------------------------------------------------------------------- |
+| **Graph Engine**    | Kuzu embedded graph DB with strict referential integrity and cascade-safe deletes             |
+| **Semantic Search** | `all-MiniLM-L6-v2` embeddings with hybrid ranking (similarity + recency + context + keywords) |
+| **MCP Protocol**    | 25+ tools exposed via FastMCP over stdio — plug into Claude Code, Cursor, or any MCP client   |
+| **Artifacts**       | Attach datasheets, configs, logs, and code snippets to sessions and errors                    |
+| **Daily Activity**  | Automatic aggregation of sessions into daily summaries with garbage collection                |
+| **Performance**     | Vectorized clustering, batched Cypher queries, pagination on all list endpoints               |
+| **Reliability**     | Input validation, safe limit clamping, thread-safe connections, and comprehensive test suite  |
 
-## Installation
+---
 
-```bash
-# Clone or download this repository
-cd knowledge-graph
+## Quick Start
 
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
-pip install -e .
-```
-
-## Usage
-
-### Running the MCP Server
+### Linux / macOS
 
 ```bash
-# Test with FastMCP dev mode
-fastmcp dev src/main.py
-
-# Or run directly
-python -m src.main
-
-# Or use installed console script
-opencode-kg
-
-# Alternative script alias
-mahoraga-kg
+git clone https://github.com/Aadi775/MahoRAGa.git
+cd MahoRAGa
+chmod +x setup.sh && ./setup.sh
 ```
 
-### MCP Client Integration
+### Windows
 
-Project-scoped `.mcp.json` (recommended for teams):
+```cmd
+git clone https://github.com/Aadi775/MahoRAGa.git
+cd MahoRAGa
+setup.bat
+```
+
+Both scripts create a `.venv`, install all dependencies, and configure the MCP server entry automatically.
+
+---
+
+## Connect to Your Agent
+
+### Claude Code / Claude Desktop
+
+Add this to your MCP config (`.mcp.json` or `~/.claude.json`):
 
 ```json
 {
   "mcpServers": {
-    "knowledge-graph": {
+    "mahoraga": {
       "type": "stdio",
-      "command": "python",
-      "args": ["-m", "src.main"],
-      "cwd": "/path/to/knowledge-graph"
+      "command": "/path/to/MahoRAGa/.venv/bin/python",
+      "args": ["-m", "src.server"]
     }
   }
 }
 ```
 
-For Claude Code global config, add the same `mcpServers` entry to `~/.claude.json`.
-For other MCP clients, use their MCP JSON location and keep the same server object format.
+### Any MCP-Compatible Client
 
-## MCP Tools
+MahoRAGa speaks **standard MCP over stdio**. Point your client's server config to the Python module and you're set.
 
-### Project Management
+---
 
-| Tool | Description |
-|------|-------------|
-| `add_project` | Create a new project node |
-| `update_project` | Update project metadata or merge projects |
-| `list_projects` | List all known projects |
+## MCP Tools Reference
 
-### Session Tracking
+### 🗂️ Projects
 
-| Tool | Description |
-|------|-------------|
-| `add_session` | Create a session linked to a project |
-| `close_session` | Close session and create daily activity |
-| `get_recent_sessions` | Get recent sessions across projects |
+| Tool             | Description                           |
+| ---------------- | ------------------------------------- |
+| `add_project`    | Create a new project node             |
+| `update_project` | Update metadata or merge two projects |
+| `list_projects`  | Paginated list of all projects        |
 
-### Error & Solution Logging
+### 📝 Sessions
 
-| Tool | Description |
-|------|-------------|
-| `log_error` | Log an error with semantic embedding |
-| `log_solution` | Log a solution for an error |
-| `get_error_solutions` | Semantic search for similar errors |
+| Tool                  | Description                                      |
+| --------------------- | ------------------------------------------------ |
+| `add_session`         | Start a session (auto-creates project if needed) |
+| `close_session`       | Close and generate daily activity                |
+| `get_recent_sessions` | Fetch recent sessions across projects            |
+| `delete_session`      | Cascade-delete with DailyActivity sync           |
 
-### Knowledge Management
+### 🐛 Errors & Solutions
 
-| Tool | Description |
-|------|-------------|
-| `add_concept` | Add a concept with embedding |
-| `link_concept_to_session` | Link concept to session |
-| `update_concept` | Update and re-embed concept |
-| `delete_concept` | Remove a concept |
-| `search` | Semantic search over knowledge graph |
+| Tool                  | Description                                  |
+| --------------------- | -------------------------------------------- |
+| `log_error`           | Log an error with semantic embedding         |
+| `log_solution`        | Attach a fix to a logged error               |
+| `get_error_solutions` | Find similar past errors and their solutions |
+| `cluster_errors`      | Group related errors by vector similarity    |
 
-`search` now uses a hybrid rank score:
-- 55% semantic similarity
-- 20% recency
-- 15% context richness (related errors/solutions)
-- 10% keyword overlap
+### 🧠 Knowledge
 
-Keyword overlap prioritizes title matches over content matches for better precision.
+| Tool                      | Description                             |
+| ------------------------- | --------------------------------------- |
+| `add_concept`             | Add a semantic knowledge entry          |
+| `update_concept`          | Update and re-embed a concept           |
+| `link_concept_to_session` | Associate a concept with a session      |
+| `batch_link_concepts`     | Bulk-link multiple concepts efficiently |
+| `search`                  | Hybrid semantic + keyword search        |
 
-`search` responses also include a `metrics` object with timing and result counts.
+### 📎 Artifacts
 
-`search` also validates empty queries and clamps `top_k` to a safe range.
+| Tool                       | Description                         |
+| -------------------------- | ----------------------------------- |
+| `add_artifact`             | Attach a file/document to the graph |
+| `link_artifact_to_session` | Connect artifact to a session       |
+| `link_artifact_to_error`   | Connect artifact to an error        |
+| `get_project_artifacts`    | List artifacts for a project        |
+| `search_artifacts_by_tag`  | Tag-based artifact search           |
 
-### Project History
+### 📊 Analytics
 
-| Tool | Description |
-|------|-------------|
-| `get_project_history` | Get all sessions/errors/solutions for project |
+| Tool                           | Description                          |
+| ------------------------------ | ------------------------------------ |
+| `get_project_history`          | Full session/error/solution timeline |
+| `get_daily_summary`            | Aggregated stats for a specific date |
+| `get_learning_progress`        | Error resolution trends over time    |
+| `get_project_daily_activities` | Paginated daily activity feed        |
 
-### Cleanup
+### 🔧 Admin
 
-| Tool | Description |
-|------|-------------|
-| `delete_old_sessions` | Smart cleanup preserving concepts |
+| Tool                    | Description                                              |
+| ----------------------- | -------------------------------------------------------- |
+| `delete_old_sessions`   | Prune sessions older than N days (with DailyActivity GC) |
+| `delete_project`        | Full cascade delete of a project                         |
+| `get_unlinked_concepts` | Find orphaned concepts                                   |
 
-### Pagination
+---
 
-These tools support pagination arguments:
-- `list_projects(limit=100, offset=0)`
-- `get_unlinked_concepts(limit=100, offset=0)`
-- `get_project_daily_activities(project_id, limit=100, offset=0)`
+## Search Algorithm
+
+MahoRAGa uses a **hybrid ranking** algorithm that blends four signals:
+
+| Weight  | Signal              | Description                                                    |
+| ------- | ------------------- | -------------------------------------------------------------- |
+| **55%** | Semantic Similarity | Cosine similarity between query and content embeddings         |
+| **20%** | Recency             | Exponential decay favoring recent knowledge                    |
+| **15%** | Context Richness    | Bonus for concepts with linked errors, solutions, and sessions |
+| **10%** | Keyword Overlap     | Title-boosted keyword matching for precision                   |
+
+---
 
 ## Graph Schema
 
-### Node Types
+```
+Project ← HAS_PROJECT ← Session → CONTRIBUTES_TO → DailyActivity → BELONGS_TO → Project
+                              ↑
+                     OCCURRED_IN
+                              |
+                           Error ← SOLVES ← Solution
+                              ↑
+                        ATTACHED_TO
+                              |
+                          Artifact ← USES_ARTIFACT ← Session
+                              ↑
+                         ILLUSTRATES
+                              |
+                           Concept ← REFERENCES ← Session
+```
 
-```
-Project(id, name, path, description, created_at)
-Session(id, project_id, summary, files_touched, started_at, ended_at)
-Error(id, project_id, session_id, message, context, file, timestamp, message_embedding)
-Solution(id, error_id, description, code_snippet, timestamp)
-Concept(id, title, content, tags, embedding)
-DailyActivity(id, date, project_id, summary, session_ids, errors_count)
-```
+**Nodes:** `Project` · `Session` · `Error` · `Solution` · `Concept` · `DailyActivity` · `Artifact`
 
-### Relationships
-
-```
-Session -[:HAS_PROJECT]-> Project
-Error -[:OCCURRED_IN]-> Session
-Solution -[:SOLVES]-> Error
-Session -[:REFERENCES]-> Concept
-Session -[:CONTRIBUTES_TO]-> DailyActivity
-DailyActivity -[:BELONGS_TO]-> Project
-```
+---
 
 ## Data Storage
 
-All data is stored locally at:
+All data is stored locally in an embedded Kuzu database:
+
 ```
 ~/.config/mahoraga/graph.db
 ```
 
-## Example Usage
+No external services, no network calls, no cloud sync. Fully offline-capable.
 
-```python
-# Add a project
-add_project(name="my-app", path="/home/user/projects/my-app")
-
-# Start a session
-result = add_session(
-    project_name="my-app",
-    summary="Fixed authentication bug",
-    files_touched=["auth/login.py", "auth/utils.py"]
-)
-session_id = result["session_id"]
-
-# Log an error
-error_result = log_error(
-    session_id=session_id,
-    message="JWT token validation failed",
-    context="Token expired during user login",
-    file="auth/login.py"
-)
-
-# Log a solution
-log_solution(
-    error_id=error_result["error_id"],
-    description="Added token refresh logic",
-    code_snippet="refresh_token_if_expired(user_token)"
-)
-
-# Add a learned concept
-concept_result = add_concept(
-    title="JWT Token Refresh",
-    content="Always refresh tokens before expiry to prevent auth failures",
-    tags=["authentication", "jwt", "security"]
-)
-
-# Link concept to session
-link_concept_to_session(concept_result["concept_id"], session_id)
-
-# Close session
-close_session(session_id)
-
-# Search later
-search("how to handle JWT token expiry")
-```
+---
 
 ## Development
 
 ```bash
-# Run tests
-pytest tests/
+# Activate virtual environment
+source .venv/bin/activate
 
-# Run synthetic performance benchmarks
-pytest tests/ -m performance
+# Run the full test suite (87 tests)
+pytest tests/ -v
 
-# Format code
-black src/
+# Run performance benchmarks
+pytest tests/test_performance.py -v
 
-# Lint
-ruff check src/
+# Run search tuning tests
+pytest tests/test_search_tuning.py -v
 ```
 
-## Changelog
+---
 
-See `CHANGELOG.md` for a versioned history of changes.
+## Documentation
+
+A full interactive documentation site is included in the `docs/` directory, built with React, Vite, TailwindCSS, GSAP, and Framer Motion.
+
+```bash
+cd docs && npm install && npm run dev
+```
+
+Then open [http://localhost:5173](http://localhost:5173).
+
+---
 
 ## License
 
-MIT
+MIT — use it however you want.
