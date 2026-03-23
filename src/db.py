@@ -991,9 +991,13 @@ def search_concepts_by_tag(conn: kuzu.Connection, tag: str) -> list[dict]:
         {"quoted_tag": f'"{tag}"'},
     )
     concepts = _result_to_dicts(result)
+    matched = []
     for c in concepts:
-        c["tags"] = _parse_json_field(c.get("tags"))
-    return concepts
+        tags = _parse_json_field(c.get("tags"))
+        c["tags"] = tags
+        if isinstance(tags, list) and tag in tags:
+            matched.append(c)
+    return matched
 
 
 def get_project_statistics(conn: kuzu.Connection, project_id: str) -> dict:
