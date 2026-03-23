@@ -211,6 +211,9 @@ async def test_update_and_delete_tools(test_connection):
     delete_session = await _call_tool_fn(mcp, "delete_session", session["session_id"])
     assert delete_session.get("deleted") is True
 
+    safe_cleanup = await _call_tool_fn(mcp, "delete_old_sessions", 0)
+    assert "deleted_sessions" in safe_cleanup
+
 
 @pytest.mark.asyncio
 async def test_stats_and_history_tools(test_connection):

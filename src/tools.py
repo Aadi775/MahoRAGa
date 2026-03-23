@@ -622,6 +622,7 @@ def register_tools(mcp: FastMCP) -> None:
             dict with deletion statistics
         """
         try:
+            days_to_keep = _clamp_limit(days_to_keep, default=30, maximum=3650)
             conn = db.get_connection()
             return db.delete_old_sessions(conn, days_to_keep)
         except Exception as e:
