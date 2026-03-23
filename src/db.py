@@ -974,10 +974,10 @@ def get_project_statistics(conn: kuzu.Connection, project_id: str) -> dict:
     error_count = error_result.get_next()[0] if error_result.has_next() else 0
 
     solution_result = conn.execute(
-        "MATCH (e:Error {project_id: $pid}) MATCH (sol:Solution)-[:SOLVES]->(e) RETURN count(sol)",
+        "MATCH (e:Error {project_id: $pid}) MATCH (sol:Solution)-[:SOLVES]->(e) RETURN count(DISTINCT e)",
         {"pid": project_id},
     )
-    solution_count = solution_result.get_next()[0] if solution_result.has_next() else 0
+    resolved_error_count = solution_result.get_next()[0] if solution_result.has_next() else 0
 
     sessions_with_concepts = conn.execute(
         "MATCH (s:Session {project_id: $pid})-[:REFERENCES]->(c:Concept) RETURN count(DISTINCT c)",
@@ -991,7 +991,7 @@ def get_project_statistics(conn: kuzu.Connection, project_id: str) -> dict:
     )
     unresolved_count = unresolved_result.get_next()[0] if unresolved_result.has_next() else 0
 
-    resolution_rate = solution_count / error_count if error_count > 0 else 1.0
+    resolution_rate = resolved_error_count / error_count if error_count > 0 else 1.0
     avg_errors_per_session = error_count / session_count if session_count > 0 else 0.0
 
     first_session_result = conn.execute(
@@ -1018,7 +1018,7 @@ def get_project_statistics(conn: kuzu.Connection, project_id: str) -> dict:
     return {
         "session_count": session_count,
         "error_count": error_count,
-        "solution_count": solution_count,
+        "solution_count": resolved_error_count,
         "concept_count": concept_count,
         "unresolved_count": unresolved_count,
         "resolution_rate": round(resolution_rate, 2),
