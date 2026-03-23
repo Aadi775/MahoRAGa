@@ -22,6 +22,8 @@ Agent sessions start cold with no memory. This system provides persistent, struc
 - **Thread-safe**: New connection per call for safe async operation
 - **Fully local**: No external services required - everything runs on your machine
 - **Search observability**: Returns lightweight timing and result-count metrics per query
+- **Input safeguards**: Core tools validate required inputs and clamp unsafe limits
+- **Pagination support**: List-style tools support `limit` and `offset`
 
 ## Installation
 
@@ -121,6 +123,8 @@ Keyword overlap prioritizes title matches over content matches for better precis
 
 `search` responses also include a `metrics` object with timing and result counts.
 
+`search` also validates empty queries and clamps `top_k` to a safe range.
+
 ### Project History
 
 | Tool | Description |
@@ -132,6 +136,13 @@ Keyword overlap prioritizes title matches over content matches for better precis
 | Tool | Description |
 |------|-------------|
 | `delete_old_sessions` | Smart cleanup preserving concepts |
+
+### Pagination
+
+These tools support pagination arguments:
+- `list_projects(limit=100, offset=0)`
+- `get_unlinked_concepts(limit=100, offset=0)`
+- `get_project_daily_activities(project_id, limit=100, offset=0)`
 
 ## Graph Schema
 

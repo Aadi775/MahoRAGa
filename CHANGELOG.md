@@ -24,6 +24,11 @@ All notable changes to this project are documented in this file.
 - Updated project branding and documentation to be MCP-client agnostic (not OpenCode-specific).
 - Changed local graph storage path to `~/.config/mahoraga/graph.db`.
 - Added `mahoraga-kg` CLI script alias.
+- Added list pagination support for project and activity listing tools.
+- Added core input validation for project/session/search tools and safe `top_k` clamping.
+- Reworked project merge to rewire `HAS_PROJECT` and `BELONGS_TO` relationships correctly.
+- Removed unused `models.py` and `pydantic` dependency.
+- Unified embedding model and dimension constants across embedding and DB schema layers.
 
 ### Fixed
 - Fixed startup behavior by removing import-time embedding warmup side effects.
@@ -32,3 +37,10 @@ All notable changes to this project are documented in this file.
 - Fixed daily activity error counting to be idempotent across repeated `close_session` calls.
 - Fixed daily activity error increments to use graph relationships instead of fragile JSON substring matching.
 - Fixed error clustering to filter by `project_id` before similarity grouping.
+- Fixed duplicate concept-session links by using `MERGE` on `REFERENCES` relationships.
+- Fixed `update_concept` content-only re-embedding to preserve concept title context.
+- Fixed orphan solution creation by validating target error before insert.
+- Fixed `delete_concept` success reporting for missing concept IDs.
+- Fixed daily activity error count drift by recomputing from linked session errors.
+- Fixed potential key collisions in query row mapping for duplicate column basenames.
+- Fixed tag search false positives by enforcing exact membership after query filtering.
