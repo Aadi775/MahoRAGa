@@ -1364,6 +1364,17 @@ def get_concept_growth_over_time(conn: kuzu.Connection, project_id: str) -> dict
         row = session_result.get_next()
         session_data.append({"month": row[0], "sessions_completed": row[1]})
 
+    resolved_result = conn.execute(
+        """MATCH (s:Session {project_id: $pid})<-[:OCCURRED_IN]-(e:Error)<-[:SOLVES]-(sol:Solution)
+           WITH substring(s.started_at, 0, 7) as month, count(DISTINCT e) as resolved
+           RETURN month, resolved ORDER BY month""",
+        {"pid": project_id},
+    )
+    resolved_data = []
+    while resolved_result.has_next():
+        row = resolved_result.get_next()
+        resolved_data.append({"month": row[0], "errors_resolved": row[1]})
+
     month_map = {}
     for m in monthly_data:
         month_map[m["month"]] = {
@@ -1381,6 +1392,17 @@ def get_concept_growth_over_time(conn: kuzu.Connection, project_id: str) -> dict
                 "concepts_added": 0,
                 "sessions_completed": s["sessions_completed"],
                 "errors_resolved": 0,
+            }
+
+    for r in resolved_data:
+        if r["month"] in month_map:
+            month_map[r["month"]]["errors_resolved"] = r["errors_resolved"]
+        else:
+            month_map[r["month"]] = {
+                "month": r["month"],
+                "concepts_added": 0,
+                "sessions_completed": 0,
+                "errors_resolved": r["errors_resolved"],
             }
 
     combined = sorted(month_map.values(), key=lambda x: x["month"])

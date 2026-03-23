@@ -446,6 +446,16 @@ class TestStatistics:
         assert "solution_count" in stats
         assert "resolution_rate" in stats
 
+    def test_learning_progress_populates_errors_resolved(
+        self, test_connection, sample_project, sample_session, sample_error, sample_solution
+    ):
+        from src import db
+
+        progress = db.get_concept_growth_over_time(test_connection, sample_project)
+        assert "monthly" in progress
+        if progress["monthly"]:
+            assert "errors_resolved" in progress["monthly"][0]
+
 
 class TestDeleteOperations:
     def test_delete_session_cascade(self, test_connection, sample_session, sample_error):
