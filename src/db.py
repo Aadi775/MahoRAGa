@@ -2,6 +2,8 @@ import json
 import kuzu
 import uuid
 import atexit
+import os
+import platform
 from . import embeddings as emb
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -26,7 +28,17 @@ atexit.register(_close_db_singleton)
 
 
 def get_db_path() -> Path:
-    db_path = Path.home() / ".config" / "mahoraga" / "graph.db"
+    system = platform.system().lower()
+    if system == "windows":
+        appdata = os.getenv("APPDATA")
+        base = Path(appdata) if appdata else (Path.home() / "AppData" / "Roaming")
+    elif system == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        xdg = os.getenv("XDG_CONFIG_HOME")
+        base = Path(xdg) if xdg else (Path.home() / ".config")
+
+    db_path = base / "mahoraga" / "graph.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return db_path
 
@@ -518,11 +530,16 @@ def add_error(
         return exact_result.get_next()[0]
 
     near_result = conn.execute(
-        """MATCH (e:Error {project_id: $project_id, file: $file})
+        """MATCH (e:Error {project_id: $project_id, session_id: $session_id, file: $file})
            RETURN e.id, e.message_embedding
            ORDER BY e.timestamp DESC
            LIMIT $limit""",
-        {"project_id": project_id, "file": file, "limit": NEAR_DUP_SCAN_LIMIT},
+        {
+            "project_id": project_id,
+            "session_id": session_id,
+            "file": file,
+            "limit": NEAR_DUP_SCAN_LIMIT,
+        },
     )
     while near_result.has_next():
         row = near_result.get_next()
@@ -743,6 +760,18 @@ def get_errors_for_sessions(conn: kuzu.Connection, session_ids: list[str]) -> li
     return _result_to_dicts(result)
 
 
+def get_errors_by_ids(conn: kuzu.Connection, error_ids: list[str]) -> list[dict]:
+    if not error_ids:
+        return []
+    result = conn.execute(
+        """UNWIND $error_ids AS error_id
+           MATCH (e:Error {id: error_id})
+           RETURN DISTINCT e.*""",
+        {"error_ids": error_ids},
+    )
+    return _result_to_dicts(result)
+
+
 def get_solutions_for_errors(conn: kuzu.Connection, error_ids: list[str]) -> list[dict]:
     if not error_ids:
         return []
@@ -901,7 +930,7 @@ def delete_old_sessions(conn: kuzu.Connection, days_to_keep: int = 30) -> dict:
         conn.execute(
             """UNWIND $error_ids AS error_id
                MATCH (sol:Solution {error_id: error_id})
-               DELETE sol""",
+               DETACH DELETE sol""",
             {"error_ids": error_ids},
         )
 
@@ -1162,7 +1191,7 @@ def delete_project_cascade(conn: kuzu.Connection, project_id: str) -> dict:
             conn.execute(
                 """UNWIND $error_ids AS error_id
                    MATCH (sol:Solution {error_id: error_id})
-                   DELETE sol""",
+                   DETACH DELETE sol""",
                 {"error_ids": error_ids},
             )
 
@@ -1520,7 +1549,7 @@ def delete_session_cascade(conn: kuzu.Connection, session_id: str) -> dict:
         conn.execute(
             """UNWIND $error_ids AS error_id
                MATCH (sol:Solution {error_id: error_id})
-               DELETE sol""",
+               DETACH DELETE sol""",
             {"error_ids": error_ids},
         )
 
@@ -1595,6 +1624,10 @@ def get_daily_summary(conn: kuzu.Connection, date: str) -> dict:
 
 
 def update_daily_activity_summary(conn: kuzu.Connection, activity_id: str, summary: str) -> dict:
+    existing = conn.execute("MATCH (da:DailyActivity {id: $id}) RETURN da.id", {"id": activity_id})
+    if not existing.has_next():
+        return {"error": f"DailyActivity {activity_id} not found"}
+
     conn.execute(
         "MATCH (da:DailyActivity {id: $id}) SET da.summary = $summary",
         {"id": activity_id, "summary": summary},

@@ -207,6 +207,19 @@ class TestErrorOperations:
 
         assert first == second
 
+    def test_add_error_dedup_scoped_to_session(self, test_connection, sample_project, mock_embed):
+        from src import db
+
+        s1 = db.add_session(test_connection, sample_project, "s1", ["a.py"])
+        s2 = db.add_session(test_connection, sample_project, "s2", ["a.py"])
+
+        msg = "SharedError"
+        emb = mock_embed(msg)
+        e1 = db.add_error(test_connection, sample_project, s1, msg, "ctx", "a.py", emb)
+        e2 = db.add_error(test_connection, sample_project, s2, msg, "ctx", "a.py", emb)
+
+        assert e1 != e2
+
 
 class TestSolutionOperations:
     def test_add_solution(self, test_connection, sample_error):
@@ -356,6 +369,12 @@ class TestDailyActivity:
 
         activities = db.get_daily_activities_for_project(test_connection, sample_project)
         assert len(activities) >= 1
+
+    def test_update_daily_activity_summary_missing_returns_error(self, test_connection):
+        from src import db
+
+        result = db.update_daily_activity_summary(test_connection, "missing", "summary")
+        assert "error" in result
 
     def test_close_session_is_idempotent_for_error_counts(
         self, test_connection, sample_session, sample_project, mock_embed

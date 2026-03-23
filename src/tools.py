@@ -334,7 +334,7 @@ def register_tools(mcp: FastMCP) -> None:
             session_recency: dict[str, float] = {}
             for session in sessions:
                 if session.get("started_at"):
-                    started = datetime.fromisoformat(session["started_at"].replace("Z", "+00:00"))
+                    started = db._parse_iso_datetime(session["started_at"])
                     if started.tzinfo is None:
                         started = started.replace(tzinfo=timezone.utc)
                     days_old = (now - started).days
@@ -411,6 +411,8 @@ def register_tools(mcp: FastMCP) -> None:
 
             concepts.sort(key=lambda x: x.get("rank_score", 0), reverse=True)
             concepts = concepts[:top_k]
+            for concept in concepts:
+                concept.pop("embedding", None)
 
             final_concept_ids = {c["id"] for c in concepts}
             final_session_ids_from_concepts = {
@@ -501,13 +503,7 @@ def register_tools(mcp: FastMCP) -> None:
             scored_errors.sort(key=lambda x: x["similarity"], reverse=True)
             top_error_ids = [e["id"] for e in scored_errors[:top_k]]
 
-            result = conn.execute(
-                """UNWIND $error_ids AS error_id
-                   MATCH (e:Error {id: error_id})
-                   RETURN DISTINCT e.*""",
-                {"error_ids": top_error_ids},
-            )
-            errors = db._result_to_dicts(result)
+            errors = db.get_errors_by_ids(conn, top_error_ids)
 
             solutions = db.get_solutions_for_errors(conn, top_error_ids)
 
@@ -632,7 +628,13 @@ def register_tools(mcp: FastMCP) -> None:
             dict with deletion statistics
         """
         try:
-            days_to_keep = _clamp_limit(days_to_keep, default=30, maximum=3650)
+            if isinstance(days_to_keep, bool):
+                return {"error": "days_to_keep must be an integer"}
+            try:
+                parsed_days = int(days_to_keep)
+            except Exception:
+                return {"error": "days_to_keep must be an integer"}
+            days_to_keep = max(1, min(parsed_days, 3650))
             conn = db.get_connection()
             return db.delete_old_sessions(conn, days_to_keep)
         except Exception as e:
@@ -682,7 +684,10 @@ def register_tools(mcp: FastMCP) -> None:
         """
         try:
             conn = db.get_connection()
-            return db.get_concept_with_sessions(conn, concept_id)
+            result = db.get_concept_with_sessions(conn, concept_id)
+            if result.get("concept"):
+                result["concept"].pop("embedding", None)
+            return result
         except Exception as e:
             return {"error": str(e)}
 

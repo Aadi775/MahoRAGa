@@ -88,6 +88,9 @@ async def test_input_validation_for_core_tools(test_connection):
     bad_concept = await _call_tool_fn(mcp, "add_concept", "", "valid content", ["x"])
     assert "error" in bad_concept
 
+    bad_cleanup = await _call_tool_fn(mcp, "delete_old_sessions", "abc")
+    assert "error" in bad_cleanup
+
 
 @pytest.mark.asyncio
 async def test_concept_link_and_search_flow(test_connection):
@@ -122,6 +125,10 @@ async def test_concept_link_and_search_flow(test_connection):
     semantic = await _call_tool_fn(mcp, "search", "jwt token refresh", 5)
     assert "concepts" in semantic
     assert "sessions" in semantic
+
+    concept_details = await _call_tool_fn(mcp, "get_concept_details", concept["concept_id"])
+    assert "concept" in concept_details
+    assert "embedding" not in concept_details["concept"]
 
 
 @pytest.mark.asyncio
