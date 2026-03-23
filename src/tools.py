@@ -3,6 +3,7 @@ from . import db
 from . import embeddings
 from . import models
 from datetime import datetime, timezone
+import math
 import re
 from time import perf_counter
 from typing import Optional
@@ -285,7 +286,7 @@ def register_tools(mcp: FastMCP) -> None:
                     if started.tzinfo is None:
                         started = started.replace(tzinfo=timezone.utc)
                     days_old = (now - started).days
-                    score = max(0.0, 1 - (days_old / 365))
+                    score = math.exp(-max(0, days_old) / 365)
                     session["recency_score"] = score
                     session_recency[session["id"]] = score
 
