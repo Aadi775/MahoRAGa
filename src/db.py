@@ -1,6 +1,7 @@
 import json
 import kuzu
 import uuid
+import atexit
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Any
@@ -9,6 +10,16 @@ EMBEDDING_DIM = 384
 _DB_SINGLETON: Optional[kuzu.Database] = None
 _DB_SINGLETON_PATH: Optional[str] = None
 _SCHEMA_READY_PATHS: set[str] = set()
+
+
+def _close_db_singleton() -> None:
+    global _DB_SINGLETON
+    if _DB_SINGLETON is not None:
+        _DB_SINGLETON.close()
+        _DB_SINGLETON = None
+
+
+atexit.register(_close_db_singleton)
 
 
 def get_db_path() -> Path:

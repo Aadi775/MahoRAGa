@@ -26,12 +26,16 @@ def test_connection(temp_db_path):
     def mock_get_db_path():
         return temp_db_path
 
+    db._close_db_singleton()
+    db._SCHEMA_READY_PATHS.clear()
     db.get_db_path = mock_get_db_path
 
     conn = db.get_connection()
 
     yield conn
 
+    db._close_db_singleton()
+    db._SCHEMA_READY_PATHS.clear()
     db.get_db_path = original_get_db_path
 
 
