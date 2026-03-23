@@ -828,17 +828,25 @@ def get_solutions_for_errors(conn: kuzu.Connection, error_ids: list[str]) -> lis
     return _result_to_dicts(result)
 
 
-def get_project_history(conn: kuzu.Connection, project_name: str) -> dict:
+def get_project_history(conn: kuzu.Connection, project_name: str, limit: Optional[int] = None, offset: int = 0) -> dict:
     project = get_project_by_name(conn, project_name)
     if not project:
         return {"error": f"Project '{project_name}' not found"}
 
     project_id = project["id"]
+    safe_offset = max(0, int(offset))
 
-    result = conn.execute(
-        "MATCH (s:Session {project_id: $pid}) RETURN s.* ORDER BY s.started_at DESC",
-        {"pid": project_id},
-    )
+    if limit is None:
+        result = conn.execute(
+            "MATCH (s:Session {project_id: $pid}) RETURN s.* ORDER BY s.started_at DESC SKIP $offset",
+            {"pid": project_id, "offset": safe_offset},
+        )
+    else:
+        safe_limit = max(1, int(limit))
+        result = conn.execute(
+            "MATCH (s:Session {project_id: $pid}) RETURN s.* ORDER BY s.started_at DESC SKIP $offset LIMIT $limit",
+            {"pid": project_id, "offset": safe_offset, "limit": safe_limit},
+        )
     sessions = _result_to_dicts(result)
     for s in sessions:
         s["files_touched"] = _parse_json_field(s.get("files_touched"))
@@ -1951,12 +1959,23 @@ def list_artifacts_by_type(
     return artifacts
 
 
-def get_artifacts_for_project(conn: kuzu.Connection, project_id: str) -> list[dict]:
-    result = conn.execute(
-        """MATCH (s:Session {project_id: $pid})-[:USES_ARTIFACT]->(a:Artifact)
-           RETURN DISTINCT a.*""",
-        {"pid": project_id},
-    )
+def get_artifacts_for_project(
+    conn: kuzu.Connection, project_id: str, limit: Optional[int] = None, offset: int = 0
+) -> list[dict]:
+    safe_offset = max(0, int(offset))
+    if limit is None:
+        result = conn.execute(
+            """MATCH (s:Session {project_id: $pid})-[:USES_ARTIFACT]->(a:Artifact)
+               RETURN DISTINCT a.* SKIP $offset""",
+            {"pid": project_id, "offset": safe_offset},
+        )
+    else:
+        safe_limit = max(1, int(limit))
+        result = conn.execute(
+            """MATCH (s:Session {project_id: $pid})-[:USES_ARTIFACT]->(a:Artifact)
+               RETURN DISTINCT a.* SKIP $offset LIMIT $limit""",
+            {"pid": project_id, "offset": safe_offset, "limit": safe_limit},
+        )
     artifacts = _result_to_dicts(result)
     for a in artifacts:
         a["tags"] = _parse_json_field(a.get("tags"))
@@ -1982,13 +2001,25 @@ def get_all_artifact_embeddings(conn: kuzu.Connection) -> list[dict]:
     return artifacts
 
 
-def search_artifacts_by_tag(conn: kuzu.Connection, tag: str) -> list[dict]:
-    result = conn.execute(
-        """MATCH (a:Artifact)
-           WHERE a.tags CONTAINS $quoted_tag
-           RETURN a.*""",
-        {"quoted_tag": f'"{tag}"'},
-    )
+def search_artifacts_by_tag(
+    conn: kuzu.Connection, tag: str, limit: Optional[int] = None, offset: int = 0
+) -> list[dict]:
+    safe_offset = max(0, int(offset))
+    if limit is None:
+        result = conn.execute(
+            """MATCH (a:Artifact)
+               WHERE a.tags CONTAINS $quoted_tag
+               RETURN a.* SKIP $offset""",
+            {"quoted_tag": f'"{tag}"', "offset": safe_offset},
+        )
+    else:
+        safe_limit = max(1, int(limit))
+        result = conn.execute(
+            """MATCH (a:Artifact)
+               WHERE a.tags CONTAINS $quoted_tag
+               RETURN a.* SKIP $offset LIMIT $limit""",
+            {"quoted_tag": f'"{tag}"', "offset": safe_offset, "limit": safe_limit},
+        )
     artifacts = _result_to_dicts(result)
     matched = []
     for a in artifacts:

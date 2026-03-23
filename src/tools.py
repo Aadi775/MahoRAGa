@@ -489,18 +489,22 @@ def register_tools(mcp: FastMCP) -> None:
             }
 
     @mcp.tool
-    def get_project_history(project_name: str) -> dict:
+    def get_project_history(project_name: str, limit: int = 50, offset: int = 0) -> dict:
         """Get all sessions, errors, and solutions for a project.
 
         Args:
             project_name: Name of the project to query
+            limit: Maximum sessions to return (default 50)
+            offset: Pagination offset
 
         Returns:
             dict with project info, sessions, errors, and solutions
         """
         try:
             conn = db.get_connection()
-            return db.get_project_history(conn, project_name)
+            return db.get_project_history(
+                conn, project_name, _clamp_limit(limit, default=50, maximum=200), offset
+            )
         except Exception as e:
             return {"error": str(e)}
 
@@ -1385,18 +1389,22 @@ def register_tools(mcp: FastMCP) -> None:
             return {"error": str(e), "artifacts": []}
 
     @mcp.tool
-    def get_project_artifacts(project_id: str) -> dict:
+    def get_project_artifacts(project_id: str, limit: int = 50, offset: int = 0) -> dict:
         """Get all artifacts linked to a project's sessions.
 
         Args:
             project_id: ID of the project
+            limit: Maximum artifacts to return (default 50)
+            offset: Pagination offset
 
         Returns:
             dict with list of artifacts
         """
         try:
             conn = db.get_connection()
-            artifacts = db.get_artifacts_for_project(conn, project_id)
+            artifacts = db.get_artifacts_for_project(
+                conn, project_id, _clamp_limit(limit, default=50, maximum=200), offset
+            )
             for a in artifacts:
                 a.pop("embedding", None)
             return {"artifacts": artifacts, "count": len(artifacts)}
@@ -1404,18 +1412,22 @@ def register_tools(mcp: FastMCP) -> None:
             return {"error": str(e), "artifacts": []}
 
     @mcp.tool
-    def search_artifacts_by_tag(tag: str) -> dict:
+    def search_artifacts_by_tag(tag: str, limit: int = 50, offset: int = 0) -> dict:
         """Find artifacts by tag.
 
         Args:
             tag: Tag to search for
+            limit: Maximum artifacts to return (default 50)
+            offset: Pagination offset
 
         Returns:
             dict with list of matching artifacts
         """
         try:
             conn = db.get_connection()
-            artifacts = db.search_artifacts_by_tag(conn, tag)
+            artifacts = db.search_artifacts_by_tag(
+                conn, tag, _clamp_limit(limit, default=50, maximum=200), offset
+            )
             for a in artifacts:
                 a.pop("embedding", None)
             return {"artifacts": artifacts, "count": len(artifacts)}
