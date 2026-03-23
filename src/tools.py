@@ -233,7 +233,8 @@ def register_tools(mcp: FastMCP) -> None:
         Performs semantic search over concepts, then traverses the graph
         to find related sessions, errors, and solutions.
 
-        Results are ranked by: 70% similarity, 20% recency, 10% context richness.
+        Results are ranked by: 55% similarity, 20% recency,
+        15% context richness, 10% keyword overlap.
 
         Args:
             query: Natural language search query
