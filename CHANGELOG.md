@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
-- Added `main()` entrypoint in `src/main.py` to support `opencode-kg` console script execution.
+- Added `main()` entrypoint in `src/main.py` to support CLI script execution.
 - Added hybrid search ranking in `search` with keyword overlap signal.
 - Added lightweight search observability metrics in `search` response payload.
 - Added regression tests for search scoring fields and daily activity idempotency.
@@ -21,6 +21,9 @@ All notable changes to this project are documented in this file.
 - Updated README with hybrid ranking details, metrics output, and console-script usage.
 - Tuned hybrid search weights to 55/20/15/10 (similarity/recency/context/keyword).
 - Prioritized keyword title matches over content-only matches in `search` ranking.
+- Updated project branding and documentation to be MCP-client agnostic (not OpenCode-specific).
+- Changed local graph storage path to `~/.config/mahoraga/graph.db`.
+- Added `mahoraga-kg` CLI script alias.
 
 ### Fixed
 - Fixed startup behavior by removing import-time embedding warmup side effects.

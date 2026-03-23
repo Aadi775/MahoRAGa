@@ -1,12 +1,12 @@
 [project]
-name = "opencode-knowledge-graph"
+name = "mahoraga-knowledge-graph"
 version = "0.1.0"
-description = "A local Graph RAG knowledge base MCP server for OpenCode"
+description = "A local Graph RAG knowledge base MCP server for Claude Code and MCP-compatible agentic frameworks"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-    {name = "OpenCode Community"}
+    {name = "MahoRAGa Community"}
 ]
 keywords = ["mcp", "graph-rag", "knowledge-graph", "ai", "llm"]
 classifiers = [
@@ -36,6 +36,7 @@ dev = [
 
 [project.scripts]
 opencode-kg = "src.main:main"
+mahoraga-kg = "src.main:main"
 
 [build-system]
 requires = ["hatchling"]

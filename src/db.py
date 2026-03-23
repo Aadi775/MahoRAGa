@@ -12,7 +12,7 @@ _SCHEMA_READY_PATHS: set[str] = set()
 
 
 def get_db_path() -> Path:
-    db_path = Path.home() / ".local" / "share" / "opencode-kg" / "graph.db"
+    db_path = Path.home() / ".config" / "mahoraga" / "graph.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return db_path
 

@@ -1,10 +1,10 @@
-# OpenCode Knowledge Graph MCP Server
+# MahoRAGa Knowledge Graph MCP Server
 
-A local Graph RAG knowledge base MCP server for OpenCode that provides persistent, structured memory across all sessions and projects.
+A local Graph RAG knowledge base MCP server for Claude Code and any MCP-compatible agentic framework.
 
 ## Purpose
 
-Every OpenCode session starts cold with no memory. This system gives the agent persistent, structured, relational memory:
+Agent sessions start cold with no memory. This system provides persistent, structured, relational memory:
 
 - Errors it hit and how it solved them
 - What it knows about each project
@@ -50,16 +50,20 @@ python -m src.main
 
 # Or use installed console script
 opencode-kg
+
+# Alternative script alias
+mahoraga-kg
 ```
 
-### Integration with OpenCode
+### MCP Client Integration
 
-Add to your OpenCode configuration:
+Project-scoped `.mcp.json` (recommended for teams):
 
 ```json
 {
   "mcpServers": {
     "knowledge-graph": {
+      "type": "stdio",
       "command": "python",
       "args": ["-m", "src.main"],
       "cwd": "/path/to/knowledge-graph"
@@ -67,6 +71,9 @@ Add to your OpenCode configuration:
   }
 }
 ```
+
+For Claude Code global config, add the same `mcpServers` entry to `~/.claude.json`.
+For other MCP clients, use their MCP JSON location and keep the same server object format.
 
 ## MCP Tools
 
@@ -154,7 +161,7 @@ DailyActivity -[:BELONGS_TO]-> Project
 
 All data is stored locally at:
 ```
-~/.local/share/opencode-kg/graph.db
+~/.config/mahoraga/graph.db
 ```
 
 ## Example Usage
