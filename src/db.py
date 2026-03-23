@@ -198,6 +198,10 @@ def _to_utc_iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
+def _parse_iso_datetime(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 def add_project(conn: kuzu.Connection, name: str, path: str, description: str = "") -> str:
     project_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat()
@@ -357,7 +361,7 @@ def close_session(conn: kuzu.Connection, session_id: str, ended_at: Optional[str
     if ended_at is None:
         ended_at = datetime.now(timezone.utc).isoformat()
     else:
-        ended_at = _to_utc_iso(datetime.fromisoformat(ended_at.replace("Z", "+00:00")))
+        ended_at = _to_utc_iso(_parse_iso_datetime(ended_at))
 
     conn.execute(
         "MATCH (s:Session {id: $id}) SET s.ended_at = $ended_at",
