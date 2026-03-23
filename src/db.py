@@ -1105,7 +1105,7 @@ def delete_project_cascade(conn: kuzu.Connection, project_id: str) -> dict:
             conn.execute(
                 """UNWIND $session_ids AS session_id
                    MATCH (e:Error {session_id: session_id})
-                   DELETE e""",
+                   DETACH DELETE e""",
                 {"session_ids": session_ids},
             )
 
