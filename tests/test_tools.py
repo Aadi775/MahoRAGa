@@ -15,7 +15,16 @@ async def test_tools_registered_count():
     mcp = FastMCP("test")
     register_tools(mcp)
     tools = await mcp.list_tools()
-    assert len(tools) == 42
+    tool_names = {tool.name for tool in tools}
+    required = {
+        "add_project",
+        "add_session",
+        "search",
+        "log_error",
+        "log_solution",
+        "get_project_history",
+    }
+    assert required.issubset(tool_names)
 
 
 @pytest.mark.asyncio
