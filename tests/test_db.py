@@ -383,7 +383,11 @@ class TestBatchOperations:
             {"title": "Concept 2", "content": "Content 2", "tags": ["tag2"]},
         ]
 
-        result = db.batch_add_concepts(test_connection, concepts_data, mock_embed)
+        result = db.batch_add_concepts(
+            test_connection,
+            concepts_data,
+            lambda texts: [mock_embed(text) for text in texts],
+        )
         assert result["count"] == 2
         assert len(result["concept_ids"]) == 2
 

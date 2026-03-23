@@ -1145,14 +1145,13 @@ def batch_add_concepts(conn: kuzu.Connection, concepts_data: list[dict], embed_f
         return {"concept_ids": [], "count": 0}
 
     texts = [f"{cd.get('title', '')}: {cd.get('content', '')}" for cd in concepts_data]
-    try:
-        embeddings_batch = embed_func(texts)
-        if not isinstance(embeddings_batch, list) or (
-            embeddings_batch and not isinstance(embeddings_batch[0], list)
-        ):
-            raise TypeError("embed_func did not return batched embeddings")
-    except Exception:
-        embeddings_batch = [embed_func(text) for text in texts]
+    embeddings_batch = embed_func(texts)
+    if not isinstance(embeddings_batch, list):
+        raise TypeError("embed_func must return list[list[float]]")
+    if len(embeddings_batch) != len(concepts_data):
+        raise ValueError("embed_func returned mismatched batch size")
+    if embeddings_batch and not isinstance(embeddings_batch[0], list):
+        raise TypeError("embed_func must return batched embeddings")
 
     concept_ids = []
     for cd, embedding in zip(concepts_data, embeddings_batch):
