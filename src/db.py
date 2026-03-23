@@ -507,7 +507,11 @@ def add_error(
 
     conn.execute(
         """MATCH (s:Session {id: $sid})-[:CONTRIBUTES_TO]->(da:DailyActivity {project_id: $pid})
-           SET da.errors_count = da.errors_count + 1""",
+           WITH da
+           MATCH (s2:Session)-[:CONTRIBUTES_TO]->(da)
+           OPTIONAL MATCH (e:Error)-[:OCCURRED_IN]->(s2)
+           WITH da, count(DISTINCT e) as err_count
+           SET da.errors_count = err_count""",
         {"pid": project_id, "sid": session_id},
     )
 
