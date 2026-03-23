@@ -857,15 +857,16 @@ def get_daily_activity_by_date(conn: kuzu.Connection, date: str, project_id: str
 
 
 def search_concepts_by_tag(conn: kuzu.Connection, tag: str) -> list[dict]:
-    result = conn.execute("MATCH (c:Concept) RETURN c.*")
+    result = conn.execute(
+        """MATCH (c:Concept)
+           WHERE c.tags CONTAINS $quoted_tag
+           RETURN c.*""",
+        {"quoted_tag": f'"{tag}"'},
+    )
     concepts = _result_to_dicts(result)
-    matched = []
     for c in concepts:
-        tags = _parse_json_field(c.get("tags"))
-        if tags and tag in tags:
-            c["tags"] = tags
-            matched.append(c)
-    return matched
+        c["tags"] = _parse_json_field(c.get("tags"))
+    return concepts
 
 
 def get_project_statistics(conn: kuzu.Connection, project_id: str) -> dict:
