@@ -8,6 +8,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Any
 
 EMBEDDING_DIM = emb.EMBEDDING_DIM
+NEAR_DUP_SIMILARITY_THRESHOLD = 0.995
+NEAR_DUP_SCAN_LIMIT = 100
 _DB_SINGLETON: Optional[kuzu.Database] = None
 _DB_SINGLETON_PATH: Optional[str] = None
 _SCHEMA_READY_PATHS: set[str] = set()
@@ -363,7 +365,7 @@ def add_session(
     )
 
     conn.execute(
-        "MATCH (s:Session {id: $sid}), (p:Project {id: $pid}) CREATE (s)-[:HAS_PROJECT]->(p)",
+        "MATCH (s:Session {id: $sid}), (p:Project {id: $pid}) MERGE (s)-[:HAS_PROJECT]->(p)",
         {"sid": session_id, "pid": project_id},
     )
 
@@ -525,15 +527,18 @@ def add_error(
 
     near_result = conn.execute(
         """MATCH (e:Error {project_id: $project_id, file: $file})
-           RETURN e.id, e.message_embedding""",
-        {"project_id": project_id, "file": file},
+           RETURN e.id, e.message_embedding
+           ORDER BY e.timestamp DESC
+           LIMIT $limit""",
+        {"project_id": project_id, "file": file, "limit": NEAR_DUP_SCAN_LIMIT},
     )
     while near_result.has_next():
         row = near_result.get_next()
         existing_embedding = list(row[1]) if row[1] else []
         if (
             existing_embedding
-            and emb.cosine_similarity(message_embedding, existing_embedding) >= 0.995
+            and emb.cosine_similarity(message_embedding, existing_embedding)
+            >= NEAR_DUP_SIMILARITY_THRESHOLD
         ):
             return row[0]
 
