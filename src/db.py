@@ -6,6 +6,9 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Any
 
 EMBEDDING_DIM = 384
+_DB_SINGLETON: Optional[kuzu.Database] = None
+_DB_SINGLETON_PATH: Optional[str] = None
+_SCHEMA_READY_PATHS: set[str] = set()
 
 
 def get_db_path() -> Path:
@@ -15,15 +18,29 @@ def get_db_path() -> Path:
 
 
 def get_connection() -> kuzu.Connection:
-    db_path = get_db_path()
-    db = kuzu.Database(str(db_path))
-    conn = kuzu.Connection(db)
-    init_schema(conn)
+    global _DB_SINGLETON, _DB_SINGLETON_PATH
+
+    db_path = str(get_db_path())
+
+    if _DB_SINGLETON is not None and _DB_SINGLETON_PATH != db_path:
+        _DB_SINGLETON.close()
+        _DB_SINGLETON = None
+
+    if _DB_SINGLETON is None:
+        _DB_SINGLETON = kuzu.Database(db_path)
+        _DB_SINGLETON_PATH = db_path
+
+    conn = kuzu.Connection(_DB_SINGLETON)
+    if db_path not in _SCHEMA_READY_PATHS:
+        init_schema(conn)
+        _SCHEMA_READY_PATHS.add(db_path)
+
     return conn
 
 
 def init_schema(conn: kuzu.Connection) -> None:
-    existing_tables = set()
+    existing_node_tables = set()
+    existing_rel_tables = set()
     try:
         result = conn.execute("CALL SHOW_TABLES() RETURN *")
         while result.has_next():
@@ -31,13 +48,13 @@ def init_schema(conn: kuzu.Connection) -> None:
             table_name = row[1]
             table_type = row[2]
             if table_type == "NODE":
-                existing_tables.add(table_name)
+                existing_node_tables.add(table_name)
             elif table_type == "REL":
-                existing_tables.add(table_name)
+                existing_rel_tables.add(table_name)
     except Exception:
         pass
 
-    if "Project" not in existing_tables:
+    if "Project" not in existing_node_tables:
         conn.execute(f"""
             CREATE NODE TABLE Project(
                 id STRING,
@@ -49,7 +66,7 @@ def init_schema(conn: kuzu.Connection) -> None:
             )
         """)
 
-    if "Session" not in existing_tables:
+    if "Session" not in existing_node_tables:
         conn.execute("""
             CREATE NODE TABLE Session(
                 id STRING,
@@ -62,7 +79,7 @@ def init_schema(conn: kuzu.Connection) -> None:
             )
         """)
 
-    if "Error" not in existing_tables:
+    if "Error" not in existing_node_tables:
         conn.execute(f"""
             CREATE NODE TABLE Error(
                 id STRING,
@@ -77,7 +94,7 @@ def init_schema(conn: kuzu.Connection) -> None:
             )
         """)
 
-    if "Solution" not in existing_tables:
+    if "Solution" not in existing_node_tables:
         conn.execute("""
             CREATE NODE TABLE Solution(
                 id STRING,
@@ -89,7 +106,7 @@ def init_schema(conn: kuzu.Connection) -> None:
             )
         """)
 
-    if "Concept" not in existing_tables:
+    if "Concept" not in existing_node_tables:
         conn.execute(f"""
             CREATE NODE TABLE Concept(
                 id STRING,
@@ -101,7 +118,7 @@ def init_schema(conn: kuzu.Connection) -> None:
             )
         """)
 
-    if "DailyActivity" not in existing_tables:
+    if "DailyActivity" not in existing_node_tables:
         conn.execute("""
             CREATE NODE TABLE DailyActivity(
                 id STRING,
@@ -113,18 +130,6 @@ def init_schema(conn: kuzu.Connection) -> None:
                 PRIMARY KEY (id)
             )
         """)
-
-    existing_rel_tables = set()
-    try:
-        result = conn.execute("CALL SHOW_TABLES() RETURN *")
-        while result.has_next():
-            row = result.get_next()
-            table_name = row[1]
-            table_type = row[2]
-            if table_type == "REL":
-                existing_rel_tables.add(table_name)
-    except Exception:
-        pass
 
     if "HAS_PROJECT" not in existing_rel_tables:
         conn.execute("CREATE REL TABLE HAS_PROJECT(FROM Session TO Project)")
