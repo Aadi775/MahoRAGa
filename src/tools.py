@@ -170,6 +170,11 @@ def register_tools(mcp: FastMCP) -> None:
             dict with error_id on success, or error dict on failure
         """
         try:
+            if _is_blank(message):
+                return {"error": "message cannot be empty"}
+            if _is_blank(file):
+                return {"error": "file cannot be empty"}
+
             conn = db.get_connection()
             session = db.get_session_by_id(conn, session_id)
             if not session:
@@ -223,6 +228,11 @@ def register_tools(mcp: FastMCP) -> None:
             dict with concept_id on success, or error dict on failure
         """
         try:
+            if _is_blank(title):
+                return {"error": "title cannot be empty"}
+            if _is_blank(content):
+                return {"error": "content cannot be empty"}
+
             conn = db.get_connection()
             concept_tags = tags or []
             embedding = embeddings.embed(f"{title}: {content}")

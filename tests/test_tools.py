@@ -81,6 +81,13 @@ async def test_input_validation_for_core_tools(test_connection):
     bad_search = await _call_tool_fn(mcp, "search", "", 5)
     assert "error" in bad_search
 
+    session = await _call_tool_fn(mcp, "add_session", "proj-valid", "summary", ["a.py"])
+    bad_error = await _call_tool_fn(mcp, "log_error", session["session_id"], "", "ctx", "a.py")
+    assert "error" in bad_error
+
+    bad_concept = await _call_tool_fn(mcp, "add_concept", "", "valid content", ["x"])
+    assert "error" in bad_concept
+
 
 @pytest.mark.asyncio
 async def test_concept_link_and_search_flow(test_connection):
