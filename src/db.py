@@ -2,7 +2,7 @@ import json
 import kuzu
 import uuid
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Any
 
 EMBEDDING_DIM = 384
@@ -169,9 +169,15 @@ def _parse_json_field(value: Any) -> Any:
     return value
 
 
+def _to_utc_iso(value: datetime) -> str:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc).isoformat()
+    return value.astimezone(timezone.utc).isoformat()
+
+
 def add_project(conn: kuzu.Connection, name: str, path: str, description: str = "") -> str:
     project_id = str(uuid.uuid4())
-    created_at = datetime.utcnow().isoformat()
+    created_at = datetime.now(timezone.utc).isoformat()
     conn.execute(
         "CREATE (:Project {id: $id, name: $name, path: $path, description: $description, created_at: $created_at})",
         {
@@ -272,7 +278,7 @@ def add_session(
     conn: kuzu.Connection, project_id: str, summary: str, files_touched: list[str]
 ) -> str:
     session_id = str(uuid.uuid4())
-    started_at = datetime.utcnow().isoformat()
+    started_at = datetime.now(timezone.utc).isoformat()
     files_json = json.dumps(files_touched)
 
     conn.execute(
@@ -303,7 +309,9 @@ def add_session(
 
 def close_session(conn: kuzu.Connection, session_id: str, ended_at: Optional[str] = None) -> dict:
     if ended_at is None:
-        ended_at = datetime.utcnow().isoformat()
+        ended_at = datetime.now(timezone.utc).isoformat()
+    else:
+        ended_at = _to_utc_iso(datetime.fromisoformat(ended_at.replace("Z", "+00:00")))
 
     conn.execute(
         "MATCH (s:Session {id: $id}) SET s.ended_at = $ended_at",
@@ -343,8 +351,10 @@ def _update_or_create_daily_activity(conn: kuzu.Connection, session: dict) -> No
         da = existing[0]
         da_id = da["id"]
         session_ids = _parse_json_field(da.get("session_ids", "[]"))
+        session_added = False
         if session_id not in session_ids:
             session_ids.append(session_id)
+            session_added = True
 
         error_result = conn.execute(
             "MATCH (e:Error {session_id: $sid}) RETURN count(e)", {"sid": session_id}
@@ -353,18 +363,24 @@ def _update_or_create_daily_activity(conn: kuzu.Connection, session: dict) -> No
         if error_result.has_next():
             error_count = error_result.get_next()[0]
 
+        error_delta = error_count if session_added else 0
+
         conn.execute(
             "MATCH (da:DailyActivity {id: $id}) SET da.session_ids = $session_ids, da.errors_count = da.errors_count + $error_count",
             {
                 "id": da_id,
                 "session_ids": json.dumps(session_ids),
-                "error_count": error_count,
+                "error_count": error_delta,
             },
         )
     else:
         da_id = str(uuid.uuid4())
         summary = session.get("summary", "")
         session_ids = [session_id]
+        error_result = conn.execute(
+            "MATCH (e:Error {session_id: $sid}) RETURN count(e)", {"sid": session_id}
+        )
+        initial_error_count = error_result.get_next()[0] if error_result.has_next() else 0
 
         conn.execute(
             """CREATE (:DailyActivity {
@@ -373,7 +389,7 @@ def _update_or_create_daily_activity(conn: kuzu.Connection, session: dict) -> No
                 project_id: $project_id,
                 summary: $summary,
                 session_ids: $session_ids,
-                errors_count: 0
+                errors_count: $errors_count
             })""",
             {
                 "id": da_id,
@@ -381,6 +397,7 @@ def _update_or_create_daily_activity(conn: kuzu.Connection, session: dict) -> No
                 "project_id": project_id,
                 "summary": summary,
                 "session_ids": json.dumps(session_ids),
+                "errors_count": initial_error_count,
             },
         )
 
@@ -400,6 +417,14 @@ def link_session_to_daily_activity(conn: kuzu.Connection, session_id: str) -> No
         da_rows = _result_to_dicts(result)
         if da_rows:
             da_id = da_rows[0]["id"]
+            existing_rel = conn.execute(
+                """MATCH (s:Session {id: $sid})-[r:CONTRIBUTES_TO]->(da:DailyActivity {id: $da_id})
+                   RETURN count(r)""",
+                {"sid": session_id, "da_id": da_id},
+            )
+            rel_count = existing_rel.get_next()[0] if existing_rel.has_next() else 0
+            if rel_count > 0:
+                return
             conn.execute(
                 "MATCH (s:Session {id: $sid}), (da:DailyActivity {id: $da_id}) CREATE (s)-[:CONTRIBUTES_TO]->(da)",
                 {"sid": session_id, "da_id": da_id},
@@ -416,7 +441,7 @@ def add_error(
     message_embedding: list[float],
 ) -> str:
     error_id = str(uuid.uuid4())
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = datetime.now(timezone.utc).isoformat()
 
     conn.execute(
         f"""CREATE (:Error {{
@@ -447,7 +472,8 @@ def add_error(
     )
 
     conn.execute(
-        "MATCH (da:DailyActivity {project_id: $pid}) WHERE da.session_ids CONTAINS $sid SET da.errors_count = da.errors_count + 1",
+        """MATCH (s:Session {id: $sid})-[:CONTRIBUTES_TO]->(da:DailyActivity {project_id: $pid})
+           SET da.errors_count = da.errors_count + 1""",
         {"pid": project_id, "sid": session_id},
     )
 
@@ -458,7 +484,7 @@ def add_solution(
     conn: kuzu.Connection, error_id: str, description: str, code_snippet: str = ""
 ) -> str:
     solution_id = str(uuid.uuid4())
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = datetime.now(timezone.utc).isoformat()
 
     conn.execute(
         """CREATE (:Solution {
@@ -576,8 +602,12 @@ def get_all_error_embeddings(conn: kuzu.Connection) -> list[dict]:
 def get_concepts_by_ids(conn: kuzu.Connection, concept_ids: list[str]) -> list[dict]:
     if not concept_ids:
         return []
-    placeholders = ", ".join([f"'{cid}'" for cid in concept_ids])
-    result = conn.execute(f"MATCH (c:Concept) WHERE c.id IN [{placeholders}] RETURN c.*")
+    result = conn.execute(
+        """UNWIND $concept_ids AS concept_id
+           MATCH (c:Concept {id: concept_id})
+           RETURN DISTINCT c.*""",
+        {"concept_ids": concept_ids},
+    )
     concepts = _result_to_dicts(result)
     for c in concepts:
         c["tags"] = _parse_json_field(c.get("tags"))
@@ -587,9 +617,11 @@ def get_concepts_by_ids(conn: kuzu.Connection, concept_ids: list[str]) -> list[d
 def get_sessions_referencing_concepts(conn: kuzu.Connection, concept_ids: list[str]) -> list[dict]:
     if not concept_ids:
         return []
-    placeholders = ", ".join([f"'{cid}'" for cid in concept_ids])
     result = conn.execute(
-        f"MATCH (s:Session)-[:REFERENCES]->(c:Concept) WHERE c.id IN [{placeholders}] RETURN s.*"
+        """UNWIND $concept_ids AS concept_id
+           MATCH (s:Session)-[:REFERENCES]->(c:Concept {id: concept_id})
+           RETURN DISTINCT s.*""",
+        {"concept_ids": concept_ids},
     )
     sessions = _result_to_dicts(result)
     for s in sessions:
@@ -600,9 +632,11 @@ def get_sessions_referencing_concepts(conn: kuzu.Connection, concept_ids: list[s
 def get_errors_for_sessions(conn: kuzu.Connection, session_ids: list[str]) -> list[dict]:
     if not session_ids:
         return []
-    placeholders = ", ".join([f"'{sid}'" for sid in session_ids])
     result = conn.execute(
-        f"MATCH (e:Error)-[:OCCURRED_IN]->(s:Session) WHERE s.id IN [{placeholders}] RETURN e.*"
+        """UNWIND $session_ids AS session_id
+           MATCH (e:Error)-[:OCCURRED_IN]->(s:Session {id: session_id})
+           RETURN DISTINCT e.*""",
+        {"session_ids": session_ids},
     )
     return _result_to_dicts(result)
 
@@ -610,9 +644,11 @@ def get_errors_for_sessions(conn: kuzu.Connection, session_ids: list[str]) -> li
 def get_solutions_for_errors(conn: kuzu.Connection, error_ids: list[str]) -> list[dict]:
     if not error_ids:
         return []
-    placeholders = ", ".join([f"'{eid}'" for eid in error_ids])
     result = conn.execute(
-        f"MATCH (sol:Solution)-[:SOLVES]->(e:Error) WHERE e.id IN [{placeholders}] RETURN sol.*"
+        """UNWIND $error_ids AS error_id
+           MATCH (sol:Solution)-[:SOLVES]->(e:Error {id: error_id})
+           RETURN DISTINCT sol.*""",
+        {"error_ids": error_ids},
     )
     return _result_to_dicts(result)
 
@@ -636,18 +672,22 @@ def get_project_history(conn: kuzu.Connection, project_name: str) -> dict:
 
     errors = []
     if session_ids:
-        placeholders = ", ".join([f"'{sid}'" for sid in session_ids])
         result = conn.execute(
-            f"MATCH (e:Error) WHERE e.session_id IN [{placeholders}] RETURN e.* ORDER BY e.timestamp"
+            """UNWIND $session_ids AS session_id
+               MATCH (e:Error {session_id: session_id})
+               RETURN e.* ORDER BY e.timestamp""",
+            {"session_ids": session_ids},
         )
         errors = _result_to_dicts(result)
 
     error_ids = [e["id"] for e in errors]
     solutions = []
     if error_ids:
-        placeholders = ", ".join([f"'{eid}'" for eid in error_ids])
         result = conn.execute(
-            f"MATCH (sol:Solution) WHERE sol.error_id IN [{placeholders}] RETURN sol.* ORDER BY sol.timestamp"
+            """UNWIND $error_ids AS error_id
+               MATCH (sol:Solution {error_id: error_id})
+               RETURN sol.* ORDER BY sol.timestamp""",
+            {"error_ids": error_ids},
         )
         solutions = _result_to_dicts(result)
 
@@ -707,9 +747,7 @@ def delete_concept(conn: kuzu.Connection, concept_id: str) -> dict:
 
 
 def delete_old_sessions(conn: kuzu.Connection, days_to_keep: int = 30) -> dict:
-    from datetime import datetime, timedelta
-
-    cutoff_date = (datetime.utcnow() - timedelta(days=days_to_keep)).isoformat()
+    cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days_to_keep)).isoformat()
 
     result = conn.execute(
         "MATCH (s:Session) WHERE s.started_at < $cutoff RETURN s.id, s.project_id",
@@ -837,7 +875,8 @@ def get_project_statistics(conn: kuzu.Connection, project_id: str) -> dict:
     error_count = error_result.get_next()[0] if error_result.has_next() else 0
 
     solution_result = conn.execute(
-        "MATCH (e:Error {project_id: $pid}) MATCH (sol:Solution)-[:SOLVES]->(e) RETURN count(sol)"
+        "MATCH (e:Error {project_id: $pid}) MATCH (sol:Solution)-[:SOLVES]->(e) RETURN count(sol)",
+        {"pid": project_id},
     )
     solution_count = solution_result.get_next()[0] if solution_result.has_next() else 0
 
@@ -848,7 +887,8 @@ def get_project_statistics(conn: kuzu.Connection, project_id: str) -> dict:
     concept_count = sessions_with_concepts.get_next()[0] if sessions_with_concepts.has_next() else 0
 
     unresolved_result = conn.execute(
-        "MATCH (e:Error {project_id: $pid}) WHERE NOT EXISTS { MATCH (sol:Solution)-[:SOLVES]->(e) } RETURN count(e)"
+        "MATCH (e:Error {project_id: $pid}) WHERE NOT EXISTS { MATCH (sol:Solution)-[:SOLVES]->(e) } RETURN count(e)",
+        {"pid": project_id},
     )
     unresolved_count = unresolved_result.get_next()[0] if unresolved_result.has_next() else 0
 
@@ -868,7 +908,8 @@ def get_project_statistics(conn: kuzu.Connection, project_id: str) -> dict:
     last_session = last_session_result.get_next()[0] if last_session_result.has_next() else None
 
     file_error_result = conn.execute(
-        "MATCH (e:Error {project_id: $pid}) RETURN e.file, count(e) as cnt ORDER BY cnt DESC LIMIT 5"
+        "MATCH (e:Error {project_id: $pid}) RETURN e.file, count(e) as cnt ORDER BY cnt DESC LIMIT 5",
+        {"pid": project_id},
     )
     top_files = []
     while file_error_result.has_next():
@@ -1032,8 +1073,22 @@ def get_concepts_for_project(conn: kuzu.Connection, project_id: str) -> list[dic
 def cluster_errors_by_similarity(
     conn: kuzu.Connection, project_id: str, similarity_threshold: float = 0.85
 ) -> dict:
-    errors = get_all_error_embeddings(conn)
-    project_errors = [e for e in errors if e.get("embedding")]
+    result = conn.execute(
+        """MATCH (e:Error {project_id: $pid})
+           RETURN e.id, e.message_embedding, e.message""",
+        {"pid": project_id},
+    )
+    project_errors = []
+    while result.has_next():
+        row = result.get_next()
+        project_errors.append(
+            {
+                "id": row[0],
+                "embedding": list(row[1]) if row[1] else [],
+                "message": row[2],
+            }
+        )
+    project_errors = [e for e in project_errors if e.get("embedding")]
 
     clusters = []
     used = set()

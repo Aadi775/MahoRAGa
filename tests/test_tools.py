@@ -203,3 +203,30 @@ async def test_stats_and_history_tools(test_connection):
 
     unresolved = await _call_tool_fn(mcp, "get_errors_without_solutions", project["project_id"])
     assert "errors" in unresolved
+
+
+@pytest.mark.asyncio
+async def test_search_returns_recency_and_rank_scores(test_connection):
+    mcp = FastMCP("test")
+    register_tools(mcp)
+
+    await _call_tool_fn(mcp, "add_project", "proj-rank", "/tmp/proj-rank", "desc")
+    session = await _call_tool_fn(mcp, "add_session", "proj-rank", "auth work", ["auth.py"])
+    concept = await _call_tool_fn(
+        mcp,
+        "add_concept",
+        "JWT refresh token",
+        "refresh token before expiry in authentication flows",
+        ["auth", "jwt"],
+    )
+    await _call_tool_fn(
+        mcp, "link_concept_to_session", concept["concept_id"], session["session_id"]
+    )
+
+    result = await _call_tool_fn(mcp, "search", "jwt refresh token auth", 5)
+    assert result["concepts"]
+
+    top = result["concepts"][0]
+    assert "recency_score" in top
+    assert "rank_score" in top
+    assert "keyword_score" in top

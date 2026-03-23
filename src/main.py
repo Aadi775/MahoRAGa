@@ -1,13 +1,15 @@
 from fastmcp import FastMCP
 from .tools import register_tools
-from .embeddings import warmup
 
 mcp = FastMCP("knowledge-graph")
 
 register_tools(mcp)
 
-warmup()
+
+def main() -> None:
+    """Entry point for the MCP server CLI."""
+    mcp.run()
 
 
 if __name__ == "__main__":
-    mcp.run()
+    main()

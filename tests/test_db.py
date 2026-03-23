@@ -271,6 +271,35 @@ class TestDailyActivity:
         activities = db.get_daily_activities_for_project(test_connection, sample_project)
         assert len(activities) >= 1
 
+    def test_close_session_is_idempotent_for_error_counts(
+        self, test_connection, sample_session, sample_project, mock_embed
+    ):
+        """Closing the same session repeatedly should not double-count errors in daily activity."""
+        from src import db
+
+        embedding = mock_embed("idempotent error")
+        db.add_error(
+            test_connection,
+            sample_project,
+            sample_session,
+            "idempotent error",
+            "context",
+            "file.py",
+            embedding,
+        )
+
+        db.close_session(test_connection, sample_session)
+        db.link_session_to_daily_activity(test_connection, sample_session)
+        db.close_session(test_connection, sample_session)
+        db.link_session_to_daily_activity(test_connection, sample_session)
+
+        session = db.get_session_by_id(test_connection, sample_session)
+        date = session["started_at"][:10]
+        activity = db.get_daily_activity_by_date(test_connection, date, sample_project)
+
+        assert activity is not None
+        assert activity["errors_count"] == 1
+
 
 class TestProjectHistory:
     def test_get_project_history(

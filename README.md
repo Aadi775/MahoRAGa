@@ -16,10 +16,12 @@ Every OpenCode session starts cold with no memory. This system gives the agent p
 
 - **Graph-based memory**: Uses Kuzu embedded graph database for structured knowledge storage
 - **Semantic search**: Embeds content using `all-MiniLM-L6-v2` for intelligent retrieval
+- **Hybrid ranking**: Combines semantic similarity with recency, context, and keyword overlap
 - **Relationship traversal**: Finds related sessions, errors, solutions from concept queries
 - **Daily activity tracking**: Automatically aggregates sessions into daily summaries
 - **Thread-safe**: New connection per call for safe async operation
 - **Fully local**: No external services required - everything runs on your machine
+- **Search observability**: Returns lightweight timing and result-count metrics per query
 
 ## Installation
 
@@ -45,6 +47,9 @@ fastmcp dev src/main.py
 
 # Or run directly
 python -m src.main
+
+# Or use installed console script
+opencode-kg
 ```
 
 ### Integration with OpenCode
@@ -98,6 +103,14 @@ Add to your OpenCode configuration:
 | `update_concept` | Update and re-embed concept |
 | `delete_concept` | Remove a concept |
 | `search` | Semantic search over knowledge graph |
+
+`search` now uses a hybrid rank score:
+- 60% semantic similarity
+- 20% recency
+- 10% context richness (related errors/solutions)
+- 10% keyword overlap
+
+`search` responses also include a `metrics` object with timing and result counts.
 
 ### Project History
 
@@ -194,12 +207,19 @@ search("how to handle JWT token expiry")
 # Run tests
 pytest tests/
 
+# Run synthetic performance benchmarks
+pytest tests/ -m performance
+
 # Format code
 black src/
 
 # Lint
 ruff check src/
 ```
+
+## Changelog
+
+See `CHANGELOG.md` for a versioned history of changes.
 
 ## License
 

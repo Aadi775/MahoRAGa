@@ -2,7 +2,8 @@ from fastmcp import FastMCP
 from . import db
 from . import embeddings
 from . import models
-from datetime import datetime
+from datetime import datetime, timezone
+from time import perf_counter
 from typing import Optional
 
 
@@ -152,7 +153,7 @@ def register_tools(mcp: FastMCP) -> None:
             return {"error": str(e)}
 
     @mcp.tool
-    def add_concept(title: str, content: str, tags: list[str] = []) -> dict:
+    def add_concept(title: str, content: str, tags: Optional[list[str]] = None) -> dict:
         """Add a new concept to the knowledge graph.
 
         Concepts are semantic knowledge entries that can be linked to sessions.
@@ -167,8 +168,9 @@ def register_tools(mcp: FastMCP) -> None:
         """
         try:
             conn = db.get_connection()
+            concept_tags = tags or []
             embedding = embeddings.embed(f"{title}: {content}")
-            concept_id = db.add_concept(conn, title, content, tags, embedding)
+            concept_id = db.add_concept(conn, title, content, concept_tags, embedding)
             return {"concept_id": concept_id}
         except Exception as e:
             return {"error": str(e)}
@@ -209,8 +211,12 @@ def register_tools(mcp: FastMCP) -> None:
             dict with concepts, sessions, errors, and solutions
         """
         try:
+            overall_start = perf_counter()
             conn = db.get_connection()
             query_embedding = embeddings.embed(query)
+            query_words = {
+                word.lower() for word in query.replace("_", " ").split() if len(word.strip()) >= 3
+            }
 
             all_concepts = db.get_all_concept_embeddings(conn)
             if not all_concepts:
@@ -239,49 +245,94 @@ def register_tools(mcp: FastMCP) -> None:
             error_ids = [e["id"] for e in errors]
             solutions = db.get_solutions_for_errors(conn, error_ids)
 
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
+            session_recency: dict[str, float] = {}
             for session in sessions:
                 if session.get("started_at"):
-                    started = datetime.fromisoformat(
-                        session["started_at"].replace("Z", "+00:00").replace("+00:00", "")
-                    )
+                    started = datetime.fromisoformat(session["started_at"].replace("Z", "+00:00"))
+                    if started.tzinfo is None:
+                        started = started.replace(tzinfo=timezone.utc)
                     days_old = (now - started).days
-                    session["recency_score"] = max(0, 1 - (days_old / 365))
+                    score = max(0.0, 1 - (days_old / 365))
+                    session["recency_score"] = score
+                    session_recency[session["id"]] = score
+
+            concept_session_map: dict[str, list[str]] = {}
+            concept_session_result = conn.execute(
+                """UNWIND $concept_ids AS concept_id
+                   MATCH (s:Session)-[:REFERENCES]->(c:Concept {id: concept_id})
+                   RETURN concept_id, s.id""",
+                {"concept_ids": top_concept_ids},
+            )
+            while concept_session_result.has_next():
+                row = concept_session_result.get_next()
+                concept_id = row[0]
+                session_id = row[1]
+                concept_session_map.setdefault(concept_id, []).append(session_id)
 
             for concept in concepts:
                 concept_obj = next((c for c in scored_concepts if c["id"] == concept["id"]), None)
                 if concept_obj:
                     concept["similarity"] = concept_obj["similarity"]
-                    session_matches = [
-                        s
-                        for s in sessions
-                        if concept["id"]
-                        in [c.get("id") for c in db.get_concepts_by_ids(conn, [concept["id"]])]
-                    ]
+                    session_match_ids = concept_session_map.get(concept["id"], [])
+                    session_matches = [s for s in sessions if s["id"] in session_match_ids]
                     errors_for_concept = db.get_errors_for_sessions(
                         conn, [s["id"] for s in session_matches]
                     )
                     solutions_for_errors = db.get_solutions_for_errors(
                         conn, [e["id"] for e in errors_for_concept]
                     )
+
+                    concept_recency = 0.0
+                    if session_match_ids:
+                        concept_recency = sum(
+                            session_recency.get(sid, 0.0) for sid in session_match_ids
+                        ) / len(session_match_ids)
+                    concept["recency_score"] = concept_recency
+
+                    keyword_score = 0.0
+                    if query_words:
+                        concept_text_words = set(
+                            (concept.get("title", "") + " " + concept.get("content", ""))
+                            .lower()
+                            .replace("_", " ")
+                            .split()
+                        )
+                        overlap = len(query_words.intersection(concept_text_words))
+                        keyword_score = min(1.0, overlap / max(1, len(query_words)))
+
                     concept["context_score"] = min(
                         1.0,
                         len(errors_for_concept) * 0.1 + len(solutions_for_errors) * 0.15,
                     )
+                    concept["keyword_score"] = keyword_score
 
             for concept in concepts:
                 similarity = concept.get("similarity", 0.5)
                 recency = concept.get("recency_score", 0.5)
                 context = concept.get("context_score", 0)
-                concept["rank_score"] = 0.7 * similarity + 0.2 * recency + 0.1 * context
+                keyword = concept.get("keyword_score", 0)
+                concept["rank_score"] = (
+                    0.6 * similarity + 0.2 * recency + 0.1 * context + 0.1 * keyword
+                )
 
             concepts.sort(key=lambda x: x.get("rank_score", 0), reverse=True)
+
+            metrics = {
+                "query_ms": round((perf_counter() - overall_start) * 1000, 2),
+                "concept_candidates": len(all_concepts),
+                "concept_results": len(concepts),
+                "session_results": len(sessions),
+                "error_results": len(errors),
+                "solution_results": len(solutions),
+            }
 
             return {
                 "concepts": concepts,
                 "sessions": sessions,
                 "errors": errors,
                 "solutions": solutions,
+                "metrics": metrics,
             }
         except Exception as e:
             return {
@@ -290,6 +341,7 @@ def register_tools(mcp: FastMCP) -> None:
                 "sessions": [],
                 "errors": [],
                 "solutions": [],
+                "metrics": {},
             }
 
     @mcp.tool
@@ -342,8 +394,12 @@ def register_tools(mcp: FastMCP) -> None:
             scored_errors.sort(key=lambda x: x["similarity"], reverse=True)
             top_error_ids = [e["id"] for e in scored_errors[:top_k]]
 
-            placeholders = ", ".join([f"'{eid}'" for eid in top_error_ids])
-            result = conn.execute(f"MATCH (e:Error) WHERE e.id IN [{placeholders}] RETURN e.*")
+            result = conn.execute(
+                """UNWIND $error_ids AS error_id
+                   MATCH (e:Error {id: error_id})
+                   RETURN DISTINCT e.*""",
+                {"error_ids": top_error_ids},
+            )
             errors = db._result_to_dicts(result)
 
             solutions = db.get_solutions_for_errors(conn, top_error_ids)
