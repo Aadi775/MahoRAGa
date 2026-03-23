@@ -298,8 +298,9 @@ def register_tools(mcp: FastMCP) -> None:
             query_words = _tokenize(query)
 
             all_concepts = db.get_all_concept_embeddings(conn)
-            if not all_concepts:
-                return {"concepts": [], "sessions": [], "errors": [], "solutions": []}
+            all_artifacts = db.get_all_artifact_embeddings(conn)
+            if not all_concepts and not all_artifacts:
+                return {"concepts": [], "sessions": [], "errors": [], "solutions": [], "artifacts": []}
 
             scored_concepts = []
             for concept in all_concepts:
@@ -430,6 +431,33 @@ def register_tools(mcp: FastMCP) -> None:
             final_error_ids = {e["id"] for e in errors}
             solutions = [sol for sol in solutions if sol.get("error_id") in final_error_ids]
 
+            scored_artifacts = []
+            for artifact in all_artifacts:
+                if artifact["embedding"]:
+                    sim = embeddings.cosine_similarity(query_embedding, artifact["embedding"])
+                    scored_artifacts.append(
+                        {
+                            "id": artifact["id"],
+                            "title": artifact["title"],
+                            "description": artifact["description"],
+                            "type": artifact["type"],
+                            "similarity": sim,
+                        }
+                    )
+            scored_artifacts.sort(key=lambda x: x["similarity"], reverse=True)
+            top_artifacts = scored_artifacts[:top_k]
+
+            artifact_ids = [a["id"] for a in top_artifacts]
+            artifact_details = []
+            if artifact_ids:
+                for aid in artifact_ids:
+                    a = db.get_artifact_by_id(conn, aid)
+                    if a:
+                        score = next((sa["similarity"] for sa in top_artifacts if sa["id"] == aid), 0)
+                        a["similarity"] = score
+                        a.pop("embedding", None)
+                        artifact_details.append(a)
+
             metrics = {
                 "query_ms": round((perf_counter() - overall_start) * 1000, 2),
                 "concept_candidates": len(all_concepts),
@@ -437,6 +465,7 @@ def register_tools(mcp: FastMCP) -> None:
                 "session_results": len(sessions),
                 "error_results": len(errors),
                 "solution_results": len(solutions),
+                "artifact_results": len(artifact_details),
             }
 
             return {
@@ -444,6 +473,7 @@ def register_tools(mcp: FastMCP) -> None:
                 "sessions": sessions,
                 "errors": errors,
                 "solutions": solutions,
+                "artifacts": artifact_details,
                 "metrics": metrics,
             }
         except Exception as e:
@@ -453,6 +483,7 @@ def register_tools(mcp: FastMCP) -> None:
                 "sessions": [],
                 "errors": [],
                 "solutions": [],
+                "artifacts": [],
                 "metrics": {},
             }
 
@@ -1117,3 +1148,275 @@ def register_tools(mcp: FastMCP) -> None:
             return db.update_daily_activity_summary(conn, activity_id, summary)
         except Exception as e:
             return {"error": str(e)}
+
+    # ── Artifact tools ──────────────────────────────────────────────
+
+    @mcp.tool
+    def add_artifact(
+        artifact_type: str,
+        title: str,
+        description: str,
+        content: str,
+        created_by: str = "agent",
+        tags: Optional[list[str]] = None,
+        file_path: Optional[str] = None,
+    ) -> dict:
+        """Create a new artifact in the knowledge graph.
+
+        Artifacts store files, configs, logs, code snippets, datasheets, etc.
+
+        Args:
+            artifact_type: Type of artifact (datasheet/config/log/code/snippet/diagram/note/reference/template/other)
+            title: Short title for the artifact
+            description: Description of the artifact's purpose
+            content: The actual content (code, config text, log output, etc.)
+            created_by: Who created it - 'agent' or 'user' (default 'agent')
+            tags: Optional list of tags for categorization
+            file_path: Optional path to associated file on disk
+
+        Returns:
+            dict with artifact_id on success, or error dict on failure
+        """
+        try:
+            if _is_blank(title):
+                return {"error": "title cannot be empty"}
+            if _is_blank(content):
+                return {"error": "content cannot be empty"}
+            if artifact_type not in db.VALID_ARTIFACT_TYPES:
+                return {
+                    "error": f"Invalid artifact type '{artifact_type}'. Valid types: {', '.join(sorted(db.VALID_ARTIFACT_TYPES))}"
+                }
+            if created_by not in ("agent", "user"):
+                return {"error": "created_by must be 'agent' or 'user'"}
+
+            conn = db.get_connection()
+            embed_text = f"{title}: {description or ''} {content[:500]}"
+            embedding = embeddings.embed(embed_text)
+            artifact_id = db.add_artifact(
+                conn, artifact_type, title, description or "", content,
+                embedding, created_by, tags, file_path,
+            )
+            return {"artifact_id": artifact_id}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def get_artifact_details(artifact_id: str) -> dict:
+        """Get full details of an artifact.
+
+        Args:
+            artifact_id: ID of the artifact
+
+        Returns:
+            dict with artifact details and linked sessions/concepts
+        """
+        try:
+            conn = db.get_connection()
+            artifact = db.get_artifact_by_id(conn, artifact_id)
+            if not artifact:
+                return {"error": f"Artifact {artifact_id} not found"}
+            artifact.pop("embedding", None)
+
+            sessions = []
+            session_result = conn.execute(
+                "MATCH (s:Session)-[:USES_ARTIFACT]->(a:Artifact {id: $aid}) RETURN s.*",
+                {"aid": artifact_id},
+            )
+            sessions = db._result_to_dicts(session_result)
+            for s in sessions:
+                s["files_touched"] = db._parse_json_field(s.get("files_touched"))
+
+            concepts = []
+            concept_result = conn.execute(
+                "MATCH (c:Concept)-[:ILLUSTRATES]->(a:Artifact {id: $aid}) RETURN c.*",
+                {"aid": artifact_id},
+            )
+            concepts = db._result_to_dicts(concept_result)
+            for c in concepts:
+                c["tags"] = db._parse_json_field(c.get("tags"))
+                c.pop("embedding", None)
+
+            errors = []
+            error_result = conn.execute(
+                "MATCH (a:Artifact {id: $aid})-[:ATTACHED_TO]->(e:Error) RETURN e.*",
+                {"aid": artifact_id},
+            )
+            errors = db._result_to_dicts(error_result)
+
+            return {
+                "artifact": artifact,
+                "linked_sessions": sessions,
+                "linked_concepts": concepts,
+                "linked_errors": errors,
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def update_artifact(
+        artifact_id: str,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        content: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        file_path: Optional[str] = None,
+    ) -> dict:
+        """Update an artifact's metadata or content (re-embeds automatically).
+
+        Args:
+            artifact_id: ID of the artifact
+            title: New title
+            description: New description
+            content: New content
+            tags: New tags list
+            file_path: New file path
+
+        Returns:
+            dict with success status
+        """
+        try:
+            if title is not None and _is_blank(title):
+                return {"error": "title cannot be empty"}
+            if content is not None and _is_blank(content):
+                return {"error": "content cannot be empty"}
+
+            conn = db.get_connection()
+            artifact = db.get_artifact_by_id(conn, artifact_id)
+            if not artifact:
+                return {"error": f"Artifact {artifact_id} not found"}
+
+            new_embedding = None
+            if title is not None or description is not None or content is not None:
+                t = title or artifact.get("title", "")
+                d = description or artifact.get("description", "")
+                c = content or artifact.get("content", "")
+                new_embedding = embeddings.embed(f"{t}: {d} {c[:500]}")
+
+            return db.update_artifact(
+                conn, artifact_id, title, description, content, new_embedding, tags, file_path,
+            )
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def delete_artifact(artifact_id: str) -> dict:
+        """Delete an artifact and all its relationships.
+
+        Args:
+            artifact_id: ID of the artifact to delete
+
+        Returns:
+            dict with success status
+        """
+        try:
+            conn = db.get_connection()
+            return db.delete_artifact(conn, artifact_id)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def link_artifact(
+        artifact_id: str,
+        target_id: str,
+        target_type: str,
+    ) -> dict:
+        """Link an artifact to a session, concept, or error.
+
+        Args:
+            artifact_id: ID of the artifact
+            target_id: ID of the session, concept, or error
+            target_type: One of 'session', 'concept', or 'error'
+
+        Returns:
+            dict with success status
+        """
+        try:
+            conn = db.get_connection()
+            if target_type == "session":
+                return db.link_artifact_to_session(conn, artifact_id, target_id)
+            elif target_type == "concept":
+                return db.link_artifact_to_concept(conn, artifact_id, target_id)
+            elif target_type == "error":
+                return db.link_artifact_to_error(conn, artifact_id, target_id)
+            else:
+                return {"error": f"Invalid target_type '{target_type}'. Use 'session', 'concept', or 'error'."}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def unlink_artifact_from_session(artifact_id: str, session_id: str) -> dict:
+        """Remove an artifact link from a session.
+
+        Args:
+            artifact_id: ID of the artifact
+            session_id: ID of the session
+
+        Returns:
+            dict with success status
+        """
+        try:
+            conn = db.get_connection()
+            return db.unlink_artifact_from_session(conn, artifact_id, session_id)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool
+    def list_artifacts(artifact_type: str, limit: int = 50, offset: int = 0) -> dict:
+        """List artifacts filtered by type.
+
+        Args:
+            artifact_type: Type filter (datasheet/config/log/code/snippet/diagram/note/reference/template/other)
+            limit: Max results (default 50)
+            offset: Pagination offset
+
+        Returns:
+            dict with list of artifacts
+        """
+        try:
+            conn = db.get_connection()
+            artifacts = db.list_artifacts_by_type(
+                conn, artifact_type, _clamp_limit(limit, default=50, maximum=500), offset
+            )
+            for a in artifacts:
+                a.pop("embedding", None)
+            return {"artifacts": artifacts, "count": len(artifacts)}
+        except Exception as e:
+            return {"error": str(e), "artifacts": []}
+
+    @mcp.tool
+    def get_project_artifacts(project_id: str) -> dict:
+        """Get all artifacts linked to a project's sessions.
+
+        Args:
+            project_id: ID of the project
+
+        Returns:
+            dict with list of artifacts
+        """
+        try:
+            conn = db.get_connection()
+            artifacts = db.get_artifacts_for_project(conn, project_id)
+            for a in artifacts:
+                a.pop("embedding", None)
+            return {"artifacts": artifacts, "count": len(artifacts)}
+        except Exception as e:
+            return {"error": str(e), "artifacts": []}
+
+    @mcp.tool
+    def search_artifacts_by_tag(tag: str) -> dict:
+        """Find artifacts by tag.
+
+        Args:
+            tag: Tag to search for
+
+        Returns:
+            dict with list of matching artifacts
+        """
+        try:
+            conn = db.get_connection()
+            artifacts = db.search_artifacts_by_tag(conn, tag)
+            for a in artifacts:
+                a.pop("embedding", None)
+            return {"artifacts": artifacts, "count": len(artifacts)}
+        except Exception as e:
+            return {"error": str(e), "artifacts": []}

@@ -23,6 +23,8 @@ async def test_tools_registered_count():
         "log_error",
         "log_solution",
         "get_project_history",
+        "add_artifact",
+        "link_artifact",
     }
     assert required.issubset(tool_names)
 

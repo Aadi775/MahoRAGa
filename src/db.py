@@ -181,6 +181,32 @@ def init_schema(conn: kuzu.Connection) -> None:
     if "BELONGS_TO" not in existing_rel_tables:
         conn.execute("CREATE REL TABLE BELONGS_TO(FROM DailyActivity TO Project)")
 
+    if "Artifact" not in existing_node_tables:
+        conn.execute(f"""
+            CREATE NODE TABLE Artifact(
+                id STRING,
+                type STRING,
+                title STRING,
+                description STRING,
+                created_by STRING,
+                tags STRING,
+                timestamp STRING,
+                content STRING,
+                file_path STRING,
+                embedding FLOAT[{EMBEDDING_DIM}],
+                PRIMARY KEY (id)
+            )
+        """)
+
+    if "USES_ARTIFACT" not in existing_rel_tables:
+        conn.execute("CREATE REL TABLE USES_ARTIFACT(FROM Session TO Artifact)")
+
+    if "ILLUSTRATES" not in existing_rel_tables:
+        conn.execute("CREATE REL TABLE ILLUSTRATES(FROM Concept TO Artifact)")
+
+    if "ATTACHED_TO" not in existing_rel_tables:
+        conn.execute("CREATE REL TABLE ATTACHED_TO(FROM Artifact TO Error)")
+
 
 def _result_to_dicts(result) -> list[dict]:
     rows = []
@@ -1690,3 +1716,269 @@ def update_daily_activity_summary(conn: kuzu.Connection, activity_id: str, summa
         {"id": activity_id, "summary": summary},
     )
     return {"updated": True}
+
+
+# ── Artifact operations ──────────────────────────────────────────────
+
+
+VALID_ARTIFACT_TYPES = {
+    "datasheet", "config", "log", "code", "snippet",
+    "diagram", "note", "reference", "template", "other",
+}
+
+
+def add_artifact(
+    conn: kuzu.Connection,
+    artifact_type: str,
+    title: str,
+    description: str,
+    content: str,
+    embedding: list[float],
+    created_by: str = "agent",
+    tags: Optional[list[str]] = None,
+    file_path: Optional[str] = None,
+) -> str:
+    artifact_id = str(uuid.uuid4())
+    timestamp = datetime.now(timezone.utc).isoformat()
+    tags_json = json.dumps(tags or [])
+
+    conn.execute(
+        f"""CREATE (:Artifact {{
+            id: $id,
+            type: $type,
+            title: $title,
+            description: $description,
+            created_by: $created_by,
+            tags: $tags,
+            timestamp: $timestamp,
+            content: $content,
+            file_path: $file_path,
+            embedding: $embedding
+        }})""",
+        {
+            "id": artifact_id,
+            "type": artifact_type,
+            "title": title,
+            "description": description,
+            "created_by": created_by,
+            "tags": tags_json,
+            "timestamp": timestamp,
+            "content": content,
+            "file_path": file_path or "",
+            "embedding": embedding,
+        },
+    )
+    return artifact_id
+
+
+def get_artifact_by_id(conn: kuzu.Connection, artifact_id: str) -> Optional[dict]:
+    result = conn.execute("MATCH (a:Artifact {id: $id}) RETURN a.*", {"id": artifact_id})
+    rows = _result_to_dicts(result)
+    if rows:
+        artifact = rows[0]
+        artifact["tags"] = _parse_json_field(artifact.get("tags"))
+        return artifact
+    return None
+
+
+def update_artifact(
+    conn: kuzu.Connection,
+    artifact_id: str,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    content: Optional[str] = None,
+    new_embedding: Optional[list[float]] = None,
+    tags: Optional[list[str]] = None,
+    file_path: Optional[str] = None,
+) -> dict:
+    artifact = get_artifact_by_id(conn, artifact_id)
+    if not artifact:
+        return {"error": f"Artifact {artifact_id} not found"}
+
+    updates = []
+    params: dict[str, Any] = {"id": artifact_id}
+
+    if title is not None:
+        updates.append("a.title = $title")
+        params["title"] = title
+    if description is not None:
+        updates.append("a.description = $description")
+        params["description"] = description
+    if content is not None:
+        updates.append("a.content = $content")
+        params["content"] = content
+    if new_embedding is not None:
+        updates.append("a.embedding = $embedding")
+        params["embedding"] = new_embedding
+    if tags is not None:
+        updates.append("a.tags = $tags")
+        params["tags"] = json.dumps(tags)
+    if file_path is not None:
+        updates.append("a.file_path = $file_path")
+        params["file_path"] = file_path
+
+    if updates:
+        query = f"MATCH (a:Artifact {{id: $id}}) SET {', '.join(updates)}"
+        conn.execute(query, params)
+
+    return {"updated": True}
+
+
+def delete_artifact(conn: kuzu.Connection, artifact_id: str) -> dict:
+    artifact = get_artifact_by_id(conn, artifact_id)
+    if not artifact:
+        return {"error": f"Artifact {artifact_id} not found"}
+
+    conn.execute("MATCH (a:Artifact {id: $id}) DETACH DELETE a", {"id": artifact_id})
+    return {"deleted": True}
+
+
+def link_artifact_to_session(conn: kuzu.Connection, artifact_id: str, session_id: str) -> dict:
+    artifact = get_artifact_by_id(conn, artifact_id)
+    if not artifact:
+        return {"error": f"Artifact {artifact_id} not found"}
+    session = get_session_by_id(conn, session_id)
+    if not session:
+        return {"error": f"Session {session_id} not found"}
+
+    conn.execute(
+        "MATCH (s:Session {id: $sid}), (a:Artifact {id: $aid}) MERGE (s)-[:USES_ARTIFACT]->(a)",
+        {"sid": session_id, "aid": artifact_id},
+    )
+    return {"linked": True}
+
+
+def unlink_artifact_from_session(conn: kuzu.Connection, artifact_id: str, session_id: str) -> dict:
+    conn.execute(
+        "MATCH (s:Session {id: $sid})-[r:USES_ARTIFACT]->(a:Artifact {id: $aid}) DELETE r",
+        {"sid": session_id, "aid": artifact_id},
+    )
+    return {"unlinked": True}
+
+
+def link_artifact_to_concept(conn: kuzu.Connection, artifact_id: str, concept_id: str) -> dict:
+    artifact = get_artifact_by_id(conn, artifact_id)
+    if not artifact:
+        return {"error": f"Artifact {artifact_id} not found"}
+    concept = get_concept_by_id(conn, concept_id)
+    if not concept:
+        return {"error": f"Concept {concept_id} not found"}
+
+    conn.execute(
+        "MATCH (c:Concept {id: $cid}), (a:Artifact {id: $aid}) MERGE (c)-[:ILLUSTRATES]->(a)",
+        {"cid": concept_id, "aid": artifact_id},
+    )
+    return {"linked": True}
+
+
+def link_artifact_to_error(conn: kuzu.Connection, artifact_id: str, error_id: str) -> dict:
+    artifact = get_artifact_by_id(conn, artifact_id)
+    if not artifact:
+        return {"error": f"Artifact {artifact_id} not found"}
+
+    error_check = conn.execute("MATCH (e:Error {id: $id}) RETURN e.id", {"id": error_id})
+    if not error_check.has_next():
+        return {"error": f"Error {error_id} not found"}
+
+    conn.execute(
+        "MATCH (a:Artifact {id: $aid}), (e:Error {id: $eid}) MERGE (a)-[:ATTACHED_TO]->(e)",
+        {"aid": artifact_id, "eid": error_id},
+    )
+    return {"linked": True}
+
+
+def get_artifacts_for_session(conn: kuzu.Connection, session_id: str) -> list[dict]:
+    result = conn.execute(
+        "MATCH (s:Session {id: $sid})-[:USES_ARTIFACT]->(a:Artifact) RETURN a.*",
+        {"sid": session_id},
+    )
+    artifacts = _result_to_dicts(result)
+    for a in artifacts:
+        a["tags"] = _parse_json_field(a.get("tags"))
+    return artifacts
+
+
+def get_artifacts_for_concept(conn: kuzu.Connection, concept_id: str) -> list[dict]:
+    result = conn.execute(
+        "MATCH (c:Concept {id: $cid})-[:ILLUSTRATES]->(a:Artifact) RETURN a.*",
+        {"cid": concept_id},
+    )
+    artifacts = _result_to_dicts(result)
+    for a in artifacts:
+        a["tags"] = _parse_json_field(a.get("tags"))
+    return artifacts
+
+
+def get_artifacts_for_error(conn: kuzu.Connection, error_id: str) -> list[dict]:
+    result = conn.execute(
+        "MATCH (a:Artifact)-[:ATTACHED_TO]->(e:Error {id: $eid}) RETURN a.*",
+        {"eid": error_id},
+    )
+    artifacts = _result_to_dicts(result)
+    for a in artifacts:
+        a["tags"] = _parse_json_field(a.get("tags"))
+    return artifacts
+
+
+def list_artifacts_by_type(
+    conn: kuzu.Connection, artifact_type: str, limit: int = 50, offset: int = 0
+) -> list[dict]:
+    safe_limit = max(1, int(limit))
+    safe_offset = max(0, int(offset))
+    result = conn.execute(
+        """MATCH (a:Artifact {type: $type})
+           RETURN a.* ORDER BY a.timestamp DESC SKIP $offset LIMIT $limit""",
+        {"type": artifact_type, "offset": safe_offset, "limit": safe_limit},
+    )
+    artifacts = _result_to_dicts(result)
+    for a in artifacts:
+        a["tags"] = _parse_json_field(a.get("tags"))
+    return artifacts
+
+
+def get_artifacts_for_project(conn: kuzu.Connection, project_id: str) -> list[dict]:
+    result = conn.execute(
+        """MATCH (s:Session {project_id: $pid})-[:USES_ARTIFACT]->(a:Artifact)
+           RETURN DISTINCT a.*""",
+        {"pid": project_id},
+    )
+    artifacts = _result_to_dicts(result)
+    for a in artifacts:
+        a["tags"] = _parse_json_field(a.get("tags"))
+    return artifacts
+
+
+def get_all_artifact_embeddings(conn: kuzu.Connection) -> list[dict]:
+    result = conn.execute(
+        "MATCH (a:Artifact) RETURN a.id, a.embedding, a.title, a.description, a.type"
+    )
+    artifacts = []
+    while result.has_next():
+        row = result.get_next()
+        artifacts.append(
+            {
+                "id": row[0],
+                "embedding": list(row[1]) if row[1] else [],
+                "title": row[2],
+                "description": row[3],
+                "type": row[4],
+            }
+        )
+    return artifacts
+
+
+def search_artifacts_by_tag(conn: kuzu.Connection, tag: str) -> list[dict]:
+    result = conn.execute(
+        """MATCH (a:Artifact)
+           WHERE a.tags CONTAINS $quoted_tag
+           RETURN a.*""",
+        {"quoted_tag": f'"{tag}"'},
+    )
+    artifacts = _result_to_dicts(result)
+    matched = []
+    for a in artifacts:
+        tags = _parse_json_field(a.get("tags"))
+        a["tags"] = tags
+        if isinstance(tags, list) and tag in tags:
+            matched.append(a)
+    return matched
