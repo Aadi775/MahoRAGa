@@ -2,6 +2,7 @@ import json
 import kuzu
 import uuid
 import atexit
+from . import embeddings as emb
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Any
@@ -1244,8 +1245,6 @@ def cluster_errors_by_similarity(
 
         for j, other in enumerate(project_errors):
             if i != j and other["id"] not in used:
-                from . import embeddings as emb
-
                 sim = emb.cosine_similarity(err["embedding"], other["embedding"])
                 if sim >= similarity_threshold:
                     cluster_members.append(other["id"])
