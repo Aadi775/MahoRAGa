@@ -1,7 +1,6 @@
 from fastmcp import FastMCP
 from . import db
 from . import embeddings
-from . import models
 from datetime import datetime, timezone
 import math
 import re
