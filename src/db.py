@@ -152,12 +152,18 @@ def init_schema(conn: kuzu.Connection) -> None:
 
 def _result_to_dicts(result) -> list[dict]:
     rows = []
+    columns = result.get_column_names()
+    base_counts: dict[str, int] = {}
+    for col in columns:
+        base = col.split(".")[-1] if "." in col else col
+        base_counts[base] = base_counts.get(base, 0) + 1
+
     while result.has_next():
         row = result.get_next()
-        columns = result.get_column_names()
         row_dict = {}
         for i, col in enumerate(columns):
-            key = col.split(".")[-1] if "." in col else col
+            base = col.split(".")[-1] if "." in col else col
+            key = col if base_counts.get(base, 0) > 1 else base
             row_dict[key] = row[i]
         rows.append(row_dict)
     return rows
