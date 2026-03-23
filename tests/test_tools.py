@@ -65,6 +65,24 @@ async def test_project_session_error_solution_flow(test_connection):
 
 
 @pytest.mark.asyncio
+async def test_input_validation_for_core_tools(test_connection):
+    mcp = FastMCP("test")
+    register_tools(mcp)
+
+    bad_project = await _call_tool_fn(mcp, "add_project", "", "/tmp/x", "desc")
+    assert "error" in bad_project
+
+    good_project = await _call_tool_fn(mcp, "add_project", "proj-valid", "/tmp/proj-valid", "desc")
+    assert "project_id" in good_project
+
+    bad_session = await _call_tool_fn(mcp, "add_session", "proj-valid", "", ["a.py"])
+    assert "error" in bad_session
+
+    bad_search = await _call_tool_fn(mcp, "search", "", 5)
+    assert "error" in bad_search
+
+
+@pytest.mark.asyncio
 async def test_concept_link_and_search_flow(test_connection):
     mcp = FastMCP("test")
     register_tools(mcp)

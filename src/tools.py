@@ -40,6 +40,18 @@ def _tokenize(value: str) -> set[str]:
     return {t for t in tokens if len(t) >= 3 and t not in STOP_WORDS}
 
 
+def _is_blank(value: Optional[str]) -> bool:
+    return value is None or not value.strip()
+
+
+def _clamp_limit(value: int, default: int = 10, maximum: int = 100) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        return default
+    return max(1, min(parsed, maximum))
+
+
 def register_tools(mcp: FastMCP) -> None:
 
     @mcp.tool
@@ -55,6 +67,11 @@ def register_tools(mcp: FastMCP) -> None:
             dict with project_id on success, or error dict on failure
         """
         try:
+            if _is_blank(name):
+                return {"error": "Project name cannot be empty"}
+            if _is_blank(path):
+                return {"error": "Project path cannot be empty"}
+
             conn = db.get_connection()
             existing = db.get_project_by_name(conn, name)
             if existing:
@@ -89,6 +106,13 @@ def register_tools(mcp: FastMCP) -> None:
             dict with session_id on success, or error dict on failure
         """
         try:
+            if _is_blank(project_name):
+                return {"error": "project_name cannot be empty"}
+            if _is_blank(summary):
+                return {"error": "summary cannot be empty"}
+            if not files_touched:
+                return {"error": "files_touched cannot be empty"}
+
             conn = db.get_connection()
             project = db.get_project_by_name(conn, project_name)
 
@@ -245,6 +269,17 @@ def register_tools(mcp: FastMCP) -> None:
             dict with concepts, sessions, errors, and solutions
         """
         try:
+            if _is_blank(query):
+                return {
+                    "error": "query cannot be empty",
+                    "concepts": [],
+                    "sessions": [],
+                    "errors": [],
+                    "solutions": [],
+                    "metrics": {},
+                }
+            top_k = _clamp_limit(top_k, default=5, maximum=50)
+
             overall_start = perf_counter()
             conn = db.get_connection()
             query_embedding = embeddings.embed(query)
