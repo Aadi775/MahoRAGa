@@ -34,7 +34,6 @@ dev = [
 ]
 
 [project.scripts]
-opencode-kg = "src.main:main"
 mahoraga-kg = "src.main:main"
 
 [build-system]

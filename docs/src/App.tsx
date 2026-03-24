@@ -7,6 +7,18 @@ import GettingStarted from './pages/GettingStarted';
 import Architecture from './pages/Architecture';
 import ApiReference from './pages/ApiReference';
 
+function NotFound() {
+  return (
+    <div className="flex flex-1 items-center justify-center p-8">
+      <div className="text-center">
+        <h1 className="text-6xl font-bold text-brand-400 mb-4">404</h1>
+        <p className="text-xl text-slate-300 mb-6">Page not found</p>
+        <a href="/" className="text-brand-400 hover:text-brand-300 underline">← Back to Home</a>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const location = useLocation();
 
@@ -25,6 +37,7 @@ function App() {
               <Route path="/docs/getting-started" element={<GettingStarted />} />
               <Route path="/docs/architecture" element={<Architecture />} />
               <Route path="/docs/api-reference" element={<ApiReference />} />
+              <Route path="*" element={<NotFound />} />
             </Routes>
           </AnimatePresence>
         </main>

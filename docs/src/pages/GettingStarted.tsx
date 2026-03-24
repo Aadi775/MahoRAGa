@@ -107,8 +107,7 @@ setup.bat`}
             code={`{
   "mcpServers": {
     "mahoraga": {
-      "command": "/path/to/MahoRAGa/.venv/bin/python",
-      "args": ["-m", "src.server"]
+      "command": "/path/to/MahoRAGa/.venv/bin/mahoraga-kg"
     }
   }
 }`}

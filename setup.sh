@@ -5,30 +5,21 @@ echo "=========================================="
 echo " MahoRAGa Knowledge Graph - Setup Script  "
 echo "=========================================="
 
-echo "[1/4] Creating Python virtual environment..."
+echo "[1/3] Creating Python virtual environment..."
 if [ ! -d ".venv" ]; then
     python3 -m venv .venv
 fi
 
-echo "[2/4] Activating virtual environment..."
+echo "[2/3] Activating virtual environment..."
 source .venv/bin/activate
 
-echo "[3/4] Installing dependencies..."
+echo "[3/3] Installing dependencies..."
 pip install --upgrade pip
-pip install -r requirements.txt
 pip install -e .
-
-echo "[4/4] Setting up MCP Server..."
-# FastMCP CLI installs the MCP server config into Claude Desktop/Cursor.
-# Avoid duplicate entries on repeated setup runs.
-if .venv/bin/fastmcp discover --source claude-desktop --json | grep -q '"MahoRAGa Knowledge Graph"'; then
-    echo "MCP server already registered in Claude Desktop; skipping install."
-else
-    .venv/bin/fastmcp install claude-desktop src.main:mcp --name "MahoRAGa Knowledge Graph"
-fi
 
 echo "=========================================="
 echo " Setup complete! The MCP server is ready."
-echo " Claude Desktop or Cursor will automatically"
-echo " connect to the knowledge graph."
+echo ""
+echo " Add this to your MCP client config:"
+echo "   {\"mcpServers\": {\"mahoraga\": {\"command\": \"$(pwd)/.venv/bin/mahoraga-kg\"}}}"
 echo "=========================================="

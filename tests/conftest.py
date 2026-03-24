@@ -17,18 +17,13 @@ def temp_db_path(tmp_path):
 
 
 @pytest.fixture
-def test_connection(temp_db_path):
+def test_connection(temp_db_path, monkeypatch):
     """Create a test database connection with schema initialized."""
     from src import db
 
-    original_get_db_path = db.get_db_path
-
-    def mock_get_db_path():
-        return temp_db_path
-
     db._close_db_singleton()
     db._SCHEMA_READY_PATHS.clear()
-    db.get_db_path = mock_get_db_path
+    monkeypatch.setattr(db, "get_db_path", lambda: temp_db_path)
 
     conn = db.get_connection()
 
@@ -36,7 +31,6 @@ def test_connection(temp_db_path):
 
     db._close_db_singleton()
     db._SCHEMA_READY_PATHS.clear()
-    db.get_db_path = original_get_db_path
 
 
 @pytest.fixture

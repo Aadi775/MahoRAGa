@@ -4,6 +4,7 @@ from . import embeddings
 from datetime import datetime, timezone
 import math
 import re
+import numpy as np
 from time import perf_counter
 from typing import Optional
 
@@ -18,22 +19,16 @@ SEARCH_WEIGHTS = {
 SEARCH_EMBEDDING_SCAN_LIMIT = 5000
 
 STOP_WORDS = {
-    "the",
-    "and",
-    "for",
-    "with",
-    "from",
-    "into",
-    "that",
-    "this",
-    "what",
-    "when",
-    "where",
-    "how",
-    "why",
-    "use",
-    "using",
+    "the", "and", "for", "with", "from", "into", "that", "this",
+    "what", "when", "where", "how", "why", "use", "using",
+    "are", "was", "were", "been", "being", "have", "has", "had",
+    "does", "did", "will", "would", "shall", "should", "may",
+    "might", "must", "can", "could", "not", "but", "its", "also",
+    "about", "than", "then", "just", "more", "some", "other",
+    "all", "any", "each", "every", "such", "very",
 }
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _tokenize(value: str) -> set[str]:
@@ -45,12 +40,56 @@ def _is_blank(value: Optional[str]) -> bool:
     return value is None or not value.strip()
 
 
+def _validate_date(date: str) -> Optional[str]:
+    """Return an error message if date is not YYYY-MM-DD, else None."""
+    if not _DATE_RE.match(date):
+        return f"Invalid date format '{date}'. Expected YYYY-MM-DD."
+    return None
+
+
 def _clamp_limit(value: int, default: int = 10, maximum: int = 100) -> int:
     try:
         parsed = int(value)
     except Exception:
         return default
     return max(1, min(parsed, maximum))
+
+
+def _vectorized_cosine_scores(
+    query_embedding: list[float], items: list[dict], embedding_key: str = "embedding"
+) -> list[float]:
+    """Compute cosine similarity between query and all item embeddings using vectorized NumPy.
+    Returns a list of scores (0.0 for items with empty embeddings)."""
+    if not items:
+        return []
+    query_vec = np.array(query_embedding, dtype=np.float32)
+    query_norm = np.linalg.norm(query_vec)
+    if query_norm == 0:
+        return [0.0] * len(items)
+    query_vec = query_vec / query_norm
+
+    scores = []
+    # Collect items that have embeddings for batch processing
+    valid_indices = []
+    valid_embeddings = []
+    for i, item in enumerate(items):
+        emb = item.get(embedding_key)
+        if emb:
+            valid_indices.append(i)
+            valid_embeddings.append(emb)
+
+    if valid_embeddings:
+        emb_matrix = np.array(valid_embeddings, dtype=np.float32)
+        norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
+        norms[norms == 0] = 1e-10
+        emb_matrix = emb_matrix / norms
+        sims = emb_matrix @ query_vec  # vectorized dot product
+
+        score_map = {idx: float(sims[j]) for j, idx in enumerate(valid_indices)}
+    else:
+        score_map = {}
+
+    return [score_map.get(i, 0.0) for i in range(len(items))]
 
 
 def register_tools(mcp: FastMCP) -> None:
@@ -311,9 +350,9 @@ def register_tools(mcp: FastMCP) -> None:
                 }
 
             scored_concepts = []
-            for concept in all_concepts:
-                if concept["embedding"]:
-                    sim = embeddings.cosine_similarity(query_embedding, concept["embedding"])
+            concept_scores = _vectorized_cosine_scores(query_embedding, all_concepts)
+            for concept, sim in zip(all_concepts, concept_scores):
+                if sim > 0:
                     scored_concepts.append(
                         {
                             "id": concept["id"],
@@ -447,9 +486,9 @@ def register_tools(mcp: FastMCP) -> None:
             solutions = [sol for sol in solutions if sol.get("error_id") in final_error_ids]
 
             scored_artifacts = []
-            for artifact in all_artifacts:
-                if artifact["embedding"]:
-                    sim = embeddings.cosine_similarity(query_embedding, artifact["embedding"])
+            artifact_scores = _vectorized_cosine_scores(query_embedding, all_artifacts)
+            for artifact, sim in zip(all_artifacts, artifact_scores):
+                if sim > 0:
                     scored_artifacts.append(
                         {
                             "id": artifact["id"],
@@ -545,9 +584,9 @@ def register_tools(mcp: FastMCP) -> None:
                 return {"errors": [], "solutions": []}
 
             scored_errors = []
-            for error in all_errors:
-                if error["embedding"]:
-                    sim = embeddings.cosine_similarity(query_embedding, error["embedding"])
+            error_scores = _vectorized_cosine_scores(query_embedding, all_errors)
+            for error, sim in zip(all_errors, error_scores):
+                if sim > 0:
                     scored_errors.append(
                         {
                             "id": error["id"],
@@ -771,6 +810,9 @@ def register_tools(mcp: FastMCP) -> None:
             dict with daily activity or error if not found
         """
         try:
+            date_err = _validate_date(date)
+            if date_err:
+                return {"error": date_err}
             conn = db.get_connection()
             activity = db.get_daily_activity_by_date(conn, date, project_id)
             if activity:
@@ -1147,6 +1189,9 @@ def register_tools(mcp: FastMCP) -> None:
             dict with total sessions, errors, and per-project breakdown
         """
         try:
+            date_err = _validate_date(date)
+            if date_err:
+                return {"error": date_err}
             conn = db.get_connection()
             return db.get_daily_summary(conn, date)
         except Exception as e:

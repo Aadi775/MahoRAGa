@@ -1,9 +1,17 @@
+import { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { Database, Globe, Menu } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Database, Globe, Menu, X } from 'lucide-react';
 
 const Navbar = () => {
   const location = useLocation();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  const links = [
+    { path: '/docs/getting-started', label: 'Docs' },
+    { path: '/docs/architecture', label: 'Architecture' },
+    { path: '/docs/api-reference', label: 'API' },
+  ];
 
   return (
     <motion.nav 
@@ -27,11 +35,7 @@ const Navbar = () => {
           </Link>
 
           <div className="hidden md:flex space-x-8 items-center">
-            {[
-              { path: '/docs/getting-started', label: 'Docs' },
-              { path: '/docs/architecture', label: 'Architecture' },
-              { path: '/docs/api-reference', label: 'API' },
-            ].map((link) => (
+            {links.map((link) => (
               <Link 
                 key={link.path} 
                 to={link.path}
@@ -60,13 +64,53 @@ const Navbar = () => {
             </a>
           </div>
 
-          <div className="md:hidden flex items-center">
-            <button className="text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white">
-              <Menu size={24} />
+          <div className="md:hidden flex items-center gap-4">
+            <a 
+              href="https://github.com/aadi775/MahoRAGa" 
+              target="_blank" 
+              rel="noreferrer"
+              className="text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors"
+            >
+              <Globe size={20} />
+            </a>
+            <button 
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              className="text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+            >
+              {mobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
             </button>
           </div>
         </div>
       </div>
+
+      {/* Mobile Menu Dropdown */}
+      <AnimatePresence>
+        {mobileMenuOpen && (
+          <motion.div 
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="md:hidden overflow-hidden bg-white/95 dark:bg-slate-950/95 backdrop-blur-xl border-t border-slate-200 dark:border-slate-800"
+          >
+            <div className="px-4 py-4 space-y-2">
+              {links.map((link) => (
+                <Link
+                  key={link.path}
+                  to={link.path}
+                  onClick={() => setMobileMenuOpen(false)}
+                  className={`block px-4 py-3 rounded-xl text-base font-medium transition-colors ${
+                    location.pathname === link.path 
+                      ? 'bg-brand-50 dark:bg-brand-900/20 text-brand-600 dark:text-brand-400' 
+                      : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {link.label}
+                </Link>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.nav>
   );
 };

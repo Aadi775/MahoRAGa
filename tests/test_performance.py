@@ -35,15 +35,12 @@ def test_search_scaling_synthetic_dataset(test_connection, mock_embed):
     concepts = db.get_all_concept_embeddings(test_connection)
 
     started = perf_counter()
-    scored = []
-    from src import embeddings
-
-    for c in concepts:
-        if c["embedding"]:
-            scored.append(embeddings.cosine_similarity(query_emb, c["embedding"]))
+    from src import tools
+    scored = tools._vectorized_cosine_scores(query_emb, concepts)
     elapsed_ms = (perf_counter() - started) * 1000
 
-    assert len(scored) > 0
+    assert len(scored) == len(concepts)
+    assert sum(s > 0 for s in scored) > 0
     assert elapsed_ms < 1500
 
 

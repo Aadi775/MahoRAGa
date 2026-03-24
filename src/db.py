@@ -5,6 +5,7 @@ import atexit
 import os
 import platform
 import logging
+import threading
 from . import embeddings as emb
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -13,6 +14,7 @@ from typing import Optional, Any
 EMBEDDING_DIM = emb.EMBEDDING_DIM
 NEAR_DUP_SIMILARITY_THRESHOLD = 0.995
 NEAR_DUP_SCAN_LIMIT = 100
+_DB_LOCK = threading.Lock()
 _DB_SINGLETON: Optional[kuzu.Database] = None
 _DB_SINGLETON_PATH: Optional[str] = None
 _SCHEMA_READY_PATHS: set[str] = set()
@@ -21,9 +23,10 @@ _LOGGER = logging.getLogger(__name__)
 
 def _close_db_singleton() -> None:
     global _DB_SINGLETON
-    if _DB_SINGLETON is not None:
-        _DB_SINGLETON.close()
-        _DB_SINGLETON = None
+    with _DB_LOCK:
+        if _DB_SINGLETON is not None:
+            _DB_SINGLETON.close()
+            _DB_SINGLETON = None
 
 
 atexit.register(_close_db_singleton)
@@ -56,18 +59,19 @@ def get_connection() -> kuzu.Connection:
 
     db_path = str(get_db_path())
 
-    if _DB_SINGLETON is not None and _DB_SINGLETON_PATH != db_path:
-        _DB_SINGLETON.close()
-        _DB_SINGLETON = None
+    with _DB_LOCK:
+        if _DB_SINGLETON is not None and _DB_SINGLETON_PATH != db_path:
+            _DB_SINGLETON.close()
+            _DB_SINGLETON = None
 
-    if _DB_SINGLETON is None:
-        _DB_SINGLETON = kuzu.Database(db_path)
-        _DB_SINGLETON_PATH = db_path
+        if _DB_SINGLETON is None:
+            _DB_SINGLETON = kuzu.Database(db_path)
+            _DB_SINGLETON_PATH = db_path
 
-    conn = kuzu.Connection(_DB_SINGLETON)
-    if db_path not in _SCHEMA_READY_PATHS:
-        init_schema(conn)
-        _SCHEMA_READY_PATHS.add(db_path)
+        conn = kuzu.Connection(_DB_SINGLETON)
+        if db_path not in _SCHEMA_READY_PATHS:
+            init_schema(conn)
+            _SCHEMA_READY_PATHS.add(db_path)
 
     return conn
 
@@ -166,10 +170,20 @@ def init_schema(conn: kuzu.Connection) -> None:
             )
         """)
 
-    try:
-        conn.execute("ALTER TABLE DailyActivity ADD resolved_errors_count INT64 DEFAULT 0")
-    except Exception as e:
-        _LOGGER.warning("DailyActivity migration skipped or failed: %s", e)
+    # Migration: add resolved_errors_count to DailyActivity if it was created
+    # by an older schema version that didn't include it.
+    if "DailyActivity" in existing_node_tables:
+        try:
+            # Check if the column already exists by querying for it
+            conn.execute("MATCH (da:DailyActivity) RETURN da.resolved_errors_count LIMIT 1")
+        except Exception:
+            try:
+                conn.execute(
+                    "ALTER TABLE DailyActivity ADD resolved_errors_count INT64 DEFAULT 0"
+                )
+                _LOGGER.info("Migrated DailyActivity: added resolved_errors_count column")
+            except Exception as e:
+                _LOGGER.error("DailyActivity migration failed: %s", e)
 
     if "HAS_PROJECT" not in existing_rel_tables:
         conn.execute("CREATE REL TABLE HAS_PROJECT(FROM Session TO Project)")
@@ -235,14 +249,18 @@ def _result_to_dicts(result) -> list[dict]:
     return rows
 
 
-def _parse_json_field(value: Any) -> Any:
+def _parse_json_field(value: Any, default: Any = None) -> Any:
+    """Parse a JSON-encoded string field. Returns `default` (or []) if value is None.
+    Always returns the parsed result; if parsing fails, returns a list containing the raw string."""
+    if default is None:
+        default = []
     if value is None:
-        return []
+        return default
     if isinstance(value, str):
         try:
             return json.loads(value)
         except (json.JSONDecodeError, TypeError):
-            return value
+            return [value]  # Wrap raw string in a list for type consistency
     return value
 
 
@@ -396,8 +414,9 @@ def update_project(
     if updates:
         query = f"MATCH (p:Project {{id: $id}}) SET {', '.join(updates)}"
         conn.execute(query, params)
+        return {"updated": True}
 
-    return {"updated": True}
+    return {"updated": False, "reason": "No fields to update"}
 
 
 def add_session(
@@ -972,7 +991,7 @@ def update_concept(
     if not concept:
         return {"error": f"Concept {concept_id} not found"}
 
-    if new_title:
+    if new_title is not None:
         conn.execute(
             "MATCH (c:Concept {id: $id}) SET c.content = $content, c.embedding = $embedding, c.title = $title",
             {
@@ -1391,8 +1410,12 @@ def batch_add_concepts(conn: kuzu.Connection, concepts_data: list[dict], embed_f
         raise TypeError("embed_func must return list[list[float]]")
     if len(embeddings_batch) != len(concepts_data):
         raise ValueError("embed_func returned mismatched batch size")
+    # Handle single-item batches where encode().tolist() may return a flat list
     if embeddings_batch and not isinstance(embeddings_batch[0], list):
-        raise TypeError("embed_func must return batched embeddings")
+        if len(concepts_data) == 1:
+            embeddings_batch = [embeddings_batch]
+        else:
+            raise TypeError("embed_func must return batched embeddings")
 
     concept_ids = []
     for cd, embedding in zip(concepts_data, embeddings_batch):
@@ -1741,12 +1764,7 @@ def delete_session_cascade(conn: kuzu.Connection, session_id: str) -> dict:
 
     conn.execute("MATCH (e:Error {session_id: $sid}) DETACH DELETE e", {"sid": session_id})
 
-    conn.execute("MATCH (s:Session {id: $sid})-[r:REFERENCES]->() DELETE r", {"sid": session_id})
-    conn.execute("MATCH (s:Session {id: $sid})-[r:HAS_PROJECT]->() DELETE r", {"sid": session_id})
-    conn.execute(
-        "MATCH (s:Session {id: $sid})-[r:CONTRIBUTES_TO]->() DELETE r", {"sid": session_id}
-    )
-    conn.execute("MATCH (s:Session {id: $sid})-[r:USES_ARTIFACT]->() DELETE r", {"sid": session_id})
+    # DETACH DELETE removes the node and all its relationships in one step
     conn.execute("MATCH (s:Session {id: $sid}) DETACH DELETE s", {"sid": session_id})
 
     for da_id in da_ids:
