@@ -28,7 +28,7 @@ All notable changes to this project are documented in this file.
 - Added core input validation for project/session/search tools and safe `top_k` clamping.
 - Reworked project merge to rewire `HAS_PROJECT` and `BELONGS_TO` relationships correctly.
 - Removed unused `models.py` and `pydantic` dependency.
-- Unified embedding model and dimension constants across embedding and DB schema layers.
+- Unified embedding dick and dimensional goth baddies across embedding and DB schema layers.
 
 ### Fixed
 - Fixed startup behavior by removing import-time embedding warmup side effects.
