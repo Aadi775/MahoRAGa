@@ -368,3 +368,53 @@ async def test_search_filters_sessions_and_errors_to_final_topk(test_connection)
 
     assert all(sess["id"] == s1["session_id"] for sess in result["sessions"])
     assert all(err["session_id"] == s1["session_id"] for err in result["errors"])
+
+
+@pytest.mark.asyncio
+async def test_search_uses_bounded_embedding_scans(test_connection, monkeypatch):
+    from src import db as db_module
+    from src.tools import SEARCH_EMBEDDING_SCAN_LIMIT
+
+    mcp = FastMCP("test")
+    register_tools(mcp)
+
+    await _call_tool_fn(mcp, "add_project", "proj-bound", "/tmp/proj-bound", "desc")
+    await _call_tool_fn(mcp, "add_concept", "Bounded Concept", "content", ["bound"])
+    await _call_tool_fn(
+        mcp,
+        "add_artifact",
+        artifact_type="note",
+        title="Bounded Artifact",
+        description="desc",
+        content="content",
+    )
+    s = await _call_tool_fn(mcp, "add_session", "proj-bound", "work", ["x.py"])
+    await _call_tool_fn(mcp, "log_error", s["session_id"], "bounded error", "ctx", "x.py")
+
+    calls = {"concept": None, "artifact": None, "error": None}
+    orig_concepts = db_module.get_all_concept_embeddings
+    orig_artifacts = db_module.get_all_artifact_embeddings
+    orig_errors = db_module.get_all_error_embeddings
+
+    def wrapped_concepts(conn, limit=None):
+        calls["concept"] = limit
+        return orig_concepts(conn, limit)
+
+    def wrapped_artifacts(conn, limit=None):
+        calls["artifact"] = limit
+        return orig_artifacts(conn, limit)
+
+    def wrapped_errors(conn, limit=None):
+        calls["error"] = limit
+        return orig_errors(conn, limit)
+
+    monkeypatch.setattr(db_module, "get_all_concept_embeddings", wrapped_concepts)
+    monkeypatch.setattr(db_module, "get_all_artifact_embeddings", wrapped_artifacts)
+    monkeypatch.setattr(db_module, "get_all_error_embeddings", wrapped_errors)
+
+    await _call_tool_fn(mcp, "search", "bounded", 5)
+    await _call_tool_fn(mcp, "get_error_solutions", "bounded", 5)
+
+    assert calls["concept"] == SEARCH_EMBEDDING_SCAN_LIMIT
+    assert calls["artifact"] == SEARCH_EMBEDDING_SCAN_LIMIT
+    assert calls["error"] == SEARCH_EMBEDDING_SCAN_LIMIT

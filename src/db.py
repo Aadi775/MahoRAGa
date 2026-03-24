@@ -30,6 +30,12 @@ atexit.register(_close_db_singleton)
 
 
 def get_db_path() -> Path:
+    explicit_db_path = os.getenv("MAHORAGA_DB_PATH")
+    if explicit_db_path:
+        db_path = Path(explicit_db_path).expanduser()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        return db_path
+
     system = platform.system().lower()
     if system == "windows":
         appdata = os.getenv("APPDATA")
@@ -315,6 +321,9 @@ def update_project(
     merge_project_id: Optional[str] = None,
 ) -> dict:
     if merge_project_id:
+        if project_id == merge_project_id:
+            return {"error": "Cannot merge a project into itself"}
+
         merge_target = get_project_by_id(conn, merge_project_id)
         if not merge_target:
             return {"error": f"Target project {merge_project_id} not found"}
@@ -539,7 +548,7 @@ def _update_or_create_daily_activity(conn: kuzu.Connection, session: dict) -> No
         )
 
         conn.execute(
-            "MATCH (da:DailyActivity {id: $da_id}), (p:Project {id: $pid}) CREATE (da)-[:BELONGS_TO]->(p)",
+            "MATCH (da:DailyActivity {id: $da_id}), (p:Project {id: $pid}) MERGE (da)-[:BELONGS_TO]->(p)",
             {"da_id": da_id, "pid": project_id},
         )
 
@@ -758,8 +767,15 @@ def get_concept_by_id(conn: kuzu.Connection, concept_id: str) -> Optional[dict]:
     return None
 
 
-def get_all_concept_embeddings(conn: kuzu.Connection) -> list[dict]:
-    result = conn.execute("MATCH (c:Concept) RETURN c.id, c.embedding, c.title, c.content")
+def get_all_concept_embeddings(conn: kuzu.Connection, limit: Optional[int] = None) -> list[dict]:
+    if limit is None:
+        result = conn.execute("MATCH (c:Concept) RETURN c.id, c.embedding, c.title, c.content")
+    else:
+        safe_limit = max(1, int(limit))
+        result = conn.execute(
+            "MATCH (c:Concept) RETURN c.id, c.embedding, c.title, c.content LIMIT $limit",
+            {"limit": safe_limit},
+        )
     concepts = []
     while result.has_next():
         row = result.get_next()
@@ -774,8 +790,15 @@ def get_all_concept_embeddings(conn: kuzu.Connection) -> list[dict]:
     return concepts
 
 
-def get_all_error_embeddings(conn: kuzu.Connection) -> list[dict]:
-    result = conn.execute("MATCH (e:Error) RETURN e.id, e.message_embedding, e.message")
+def get_all_error_embeddings(conn: kuzu.Connection, limit: Optional[int] = None) -> list[dict]:
+    if limit is None:
+        result = conn.execute("MATCH (e:Error) RETURN e.id, e.message_embedding, e.message")
+    else:
+        safe_limit = max(1, int(limit))
+        result = conn.execute(
+            "MATCH (e:Error) RETURN e.id, e.message_embedding, e.message LIMIT $limit",
+            {"limit": safe_limit},
+        )
     errors = []
     while result.has_next():
         row = result.get_next()
@@ -1392,7 +1415,7 @@ def batch_link_concepts_to_session(
         result = conn.execute(
             """UNWIND $concept_ids AS cid
                MATCH (c:Concept {id: cid}), (s:Session {id: $sid})
-               CREATE (s)-[:REFERENCES]->(c)
+               MERGE (s)-[:REFERENCES]->(c)
                RETURN c.id as id""",
             {"concept_ids": concept_ids, "sid": session_id},
         )
@@ -2093,10 +2116,17 @@ def get_artifacts_for_project(
     return artifacts
 
 
-def get_all_artifact_embeddings(conn: kuzu.Connection) -> list[dict]:
-    result = conn.execute(
-        "MATCH (a:Artifact) RETURN a.id, a.embedding, a.title, a.description, a.type"
-    )
+def get_all_artifact_embeddings(conn: kuzu.Connection, limit: Optional[int] = None) -> list[dict]:
+    if limit is None:
+        result = conn.execute(
+            "MATCH (a:Artifact) RETURN a.id, a.embedding, a.title, a.description, a.type"
+        )
+    else:
+        safe_limit = max(1, int(limit))
+        result = conn.execute(
+            "MATCH (a:Artifact) RETURN a.id, a.embedding, a.title, a.description, a.type LIMIT $limit",
+            {"limit": safe_limit},
+        )
     artifacts = []
     while result.has_next():
         row = result.get_next()

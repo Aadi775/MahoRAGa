@@ -109,6 +109,18 @@ class TestProjectOperations:
         )
         assert (old_belongs.get_next()[0] if old_belongs.has_next() else 0) == 0
 
+    def test_merge_project_into_self_returns_error(self, test_connection):
+        from src import db
+
+        p1 = db.add_project(test_connection, "p-self", "/tmp/p-self", "")
+        result = db.update_project(test_connection, p1, merge_project_id=p1)
+
+        assert "error" in result
+        assert "Cannot merge a project into itself" in result["error"]
+
+        project = db.get_project_by_id(test_connection, p1)
+        assert project is not None
+
 
 class TestSessionOperations:
     def test_add_session(self, test_connection, sample_project):
@@ -429,6 +441,30 @@ class TestDailyActivity:
         assert activity is not None
         assert activity["resolved_errors_count"] == 2
 
+    def test_daily_activity_belongs_to_edge_is_idempotent(
+        self, test_connection, sample_project, sample_session
+    ):
+        from src import db
+
+        db.close_session(test_connection, sample_session)
+        session = db.get_session_by_id(test_connection, sample_session)
+        assert session is not None
+
+        db._update_or_create_daily_activity(test_connection, session)
+        db._update_or_create_daily_activity(test_connection, session)
+
+        date = session["started_at"][:10]
+        activity = db.get_daily_activity_by_date(test_connection, date, sample_project)
+        assert activity is not None
+
+        result = test_connection.execute(
+            """MATCH (da:DailyActivity {id: $da_id})-[r:BELONGS_TO]->(p:Project {id: $pid})
+               RETURN count(r)""",
+            {"da_id": activity["id"], "pid": sample_project},
+        )
+        count = result.get_next()[0] if result.has_next() else 0
+        assert count == 1
+
 
 class TestProjectHistory:
     def test_get_project_history(
@@ -474,6 +510,43 @@ class TestBatchOperations:
 
         result = db.batch_link_concepts_to_session(test_connection, concept_ids, sample_session)
         assert result["count"] == 3
+
+    def test_batch_link_concepts_is_idempotent(self, test_connection, sample_session, mock_embed):
+        from src import db
+
+        concept_ids = []
+        for i in range(2):
+            embedding = mock_embed(f"Batch Concept {i}")
+            cid = db.add_concept(
+                test_connection, f"Batch Concept {i}", f"Batch Content {i}", [], embedding
+            )
+            concept_ids.append(cid)
+
+        db.batch_link_concepts_to_session(test_connection, concept_ids, sample_session)
+        db.batch_link_concepts_to_session(test_connection, concept_ids, sample_session)
+
+        result = test_connection.execute(
+            """UNWIND $concept_ids AS cid
+               MATCH (s:Session {id: $sid})-[r:REFERENCES]->(c:Concept {id: cid})
+               RETURN count(r)""",
+            {"sid": sample_session, "concept_ids": concept_ids},
+        )
+        count = result.get_next()[0] if result.has_next() else 0
+        assert count == len(concept_ids)
+
+
+class TestDbPath:
+    def test_get_db_path_honors_env_var(self, monkeypatch, tmp_path):
+        from src import db
+
+        db._close_db_singleton()
+        db._SCHEMA_READY_PATHS.clear()
+        override = tmp_path / "override" / "custom.graph.db"
+        monkeypatch.setenv("MAHORAGA_DB_PATH", str(override))
+
+        resolved = db.get_db_path()
+        assert resolved == override
+        assert resolved.parent.exists()
 
 
 class TestStatistics:

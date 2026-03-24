@@ -15,6 +15,8 @@ SEARCH_WEIGHTS = {
     "keyword": 0.1,
 }
 
+SEARCH_EMBEDDING_SCAN_LIMIT = 5000
+
 STOP_WORDS = {
     "the",
     "and",
@@ -297,8 +299,8 @@ def register_tools(mcp: FastMCP) -> None:
             query_embedding = embeddings.embed(query)
             query_words = _tokenize(query)
 
-            all_concepts = db.get_all_concept_embeddings(conn)
-            all_artifacts = db.get_all_artifact_embeddings(conn)
+            all_concepts = db.get_all_concept_embeddings(conn, limit=SEARCH_EMBEDDING_SCAN_LIMIT)
+            all_artifacts = db.get_all_artifact_embeddings(conn, limit=SEARCH_EMBEDDING_SCAN_LIMIT)
             if not all_concepts and not all_artifacts:
                 return {
                     "concepts": [],
@@ -538,7 +540,7 @@ def register_tools(mcp: FastMCP) -> None:
             conn = db.get_connection()
             query_embedding = embeddings.embed(error_message)
 
-            all_errors = db.get_all_error_embeddings(conn)
+            all_errors = db.get_all_error_embeddings(conn, limit=SEARCH_EMBEDDING_SCAN_LIMIT)
             if not all_errors:
                 return {"errors": [], "solutions": []}
 
