@@ -98,9 +98,9 @@ setup.bat`}
           viewport={{ once: true }}
           className="mt-16 p-8 glass rounded-2xl border border-brand-500/20 bg-gradient-to-br from-brand-500/5 to-purple-500/5"
         >
-          <h3 className="font-bold text-xl text-slate-900 dark:text-white mb-3">Connecting to Claude Desktop</h3>
+          <h3 className="font-bold text-xl text-slate-900 dark:text-white mb-3">Connecting to Claude Desktop (Single Client)</h3>
           <p className="text-slate-600 dark:text-slate-300 leading-relaxed mb-6">
-            After setup, you can point your local MCP client configuration mapping to the server executing the module:
+            By default, MahoRAGa uses <code>stdio</code> transport. This is perfect for a single client, as Kùzu database uses file-level locking.
           </p>
           <CodeBlock 
             language="json"
@@ -113,6 +113,35 @@ setup.bat`}
 }`}
           />
         </motion.div>
+
+        <h2 className="text-2xl font-bold mt-16 mb-4 text-slate-900 dark:text-white flex items-center gap-3">
+          <span className="flex items-center justify-center w-8 h-8 rounded-lg bg-brand-500/20 text-brand-600 dark:text-brand-400 text-sm">4</span>
+          Advanced: Multiple Clients (SSE Shared Server)
+        </h2>
+        <p className="mb-4 pl-11">
+          If you want to access the exact same MahoRAGa database from <strong>multiple clients at the same time</strong> (e.g. Claude Desktop AND Cursor), you must run MahoRAGa as a shared HTTP server.
+        </p>
+        <div className="pl-11">
+          <CodeBlock 
+            language="bash"
+            code={`# Start the shared server manually in a terminal
+mahoraga-kg --transport sse --port 8000`}
+          />
+          <p className="text-slate-600 dark:text-slate-300 mt-4 mb-4">Then, configure your MCP clients to connect to the SSE endpoint instead of launching their own process:</p>
+          <CodeBlock 
+            language="json"
+            code={`{
+  "mcpServers": {
+    "mahoraga-remote": {
+      "command": "curl",
+      "args": [],
+      "type": "sse",
+      "url": "http://localhost:8000/sse"
+    }
+  }
+}`}
+          />
+        </div>
       </div>
     </motion.div>
   );
