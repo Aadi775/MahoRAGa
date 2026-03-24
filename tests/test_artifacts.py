@@ -1,4 +1,5 @@
 """Tests for the Artifact feature — schema, DB layer, tools, and search integration."""
+
 import pytest
 from src import db
 
@@ -57,7 +58,8 @@ class TestArtifactCRUD:
 
         new_emb = mock_embed("updated content")
         result = db.update_artifact(
-            test_connection, aid,
+            test_connection,
+            aid,
             title="Updated Title",
             content="updated content",
             new_embedding=new_emb,
@@ -97,7 +99,12 @@ class TestArtifactLinking:
         eid = db.add_error(test_connection, pid, sid, "TestError", "ctx", "a.py", err_emb)
         art_emb = mock_embed("test artifact")
         aid = db.add_artifact(
-            test_connection, "code", "Test Artifact", "desc", "print('hello')", art_emb,
+            test_connection,
+            "code",
+            "Test Artifact",
+            "desc",
+            "print('hello')",
+            art_emb,
         )
         return {"pid": pid, "sid": sid, "cid": cid, "eid": eid, "aid": aid}
 
@@ -117,7 +124,9 @@ class TestArtifactLinking:
 
     def test_unlink_artifact_from_session(self, test_connection, setup_data):
         db.link_artifact_to_session(test_connection, setup_data["aid"], setup_data["sid"])
-        result = db.unlink_artifact_from_session(test_connection, setup_data["aid"], setup_data["sid"])
+        result = db.unlink_artifact_from_session(
+            test_connection, setup_data["aid"], setup_data["sid"]
+        )
         assert result == {"unlinked": True}
         artifacts = db.get_artifacts_for_session(test_connection, setup_data["sid"])
         assert len(artifacts) == 0
@@ -193,12 +202,22 @@ class TestArtifactQueries:
     def test_search_artifacts_by_tag(self, test_connection, mock_embed):
         emb = mock_embed("tagged artifact")
         db.add_artifact(
-            test_connection, "note", "Tagged", "desc", "content", emb,
+            test_connection,
+            "note",
+            "Tagged",
+            "desc",
+            "content",
+            emb,
             tags=["python", "testing"],
         )
         emb2 = mock_embed("other artifact")
         db.add_artifact(
-            test_connection, "note", "Other", "desc", "content", emb2,
+            test_connection,
+            "note",
+            "Other",
+            "desc",
+            "content",
+            emb2,
             tags=["rust"],
         )
 
@@ -216,6 +235,17 @@ class TestArtifactQueries:
         for e in all_embs:
             assert "embedding" in e
             assert "title" in e
+
+    def test_get_artifacts_by_ids(self, test_connection, mock_embed):
+        emb1 = mock_embed("artifact one")
+        emb2 = mock_embed("artifact two")
+        aid1 = db.add_artifact(test_connection, "note", "One", "desc", "content1", emb1)
+        aid2 = db.add_artifact(test_connection, "note", "Two", "desc", "content2", emb2)
+
+        artifacts = db.get_artifacts_by_ids(test_connection, [aid2, aid1])
+        ids = {a["id"] for a in artifacts}
+
+        assert ids == {aid1, aid2}
 
 
 # ── Tool-layer tests ─────────────────────────────────────────────────
@@ -238,7 +268,8 @@ async def test_artifact_tool_crud_flow(test_connection):
 
     # Create artifact
     result = await _call_tool_fn(
-        mcp, "add_artifact",
+        mcp,
+        "add_artifact",
         artifact_type="config",
         title="Test Config",
         description="A test config",
@@ -297,7 +328,12 @@ async def test_artifact_tool_validation(test_connection):
 
     # Invalid created_by
     result = await _call_tool_fn(
-        mcp, "add_artifact", artifact_type="note", title="t", description="d", content="c",
+        mcp,
+        "add_artifact",
+        artifact_type="note",
+        title="t",
+        description="d",
+        content="c",
         created_by="bot",
     )
     assert "error" in result
@@ -317,8 +353,12 @@ async def test_artifact_link_tool(test_connection):
     sess = await _call_tool_fn(mcp, "add_session", "link_test_proj", "sess", ["a.py"])
     sid = sess["session_id"]
     art = await _call_tool_fn(
-        mcp, "add_artifact", artifact_type="code", title="Link Test",
-        description="d", content="print(1)",
+        mcp,
+        "add_artifact",
+        artifact_type="code",
+        title="Link Test",
+        description="d",
+        content="print(1)",
     )
     aid = art["artifact_id"]
 
@@ -349,7 +389,9 @@ async def test_search_includes_artifacts(test_connection):
 
     # Create an artifact
     await _call_tool_fn(
-        mcp, "add_artifact", artifact_type="config",
+        mcp,
+        "add_artifact",
+        artifact_type="config",
         title="Database Connection Pooling Config",
         description="PostgreSQL connection pool settings",
         content="max_connections=100\npool_size=20",

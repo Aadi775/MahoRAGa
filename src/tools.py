@@ -300,7 +300,13 @@ def register_tools(mcp: FastMCP) -> None:
             all_concepts = db.get_all_concept_embeddings(conn)
             all_artifacts = db.get_all_artifact_embeddings(conn)
             if not all_concepts and not all_artifacts:
-                return {"concepts": [], "sessions": [], "errors": [], "solutions": [], "artifacts": []}
+                return {
+                    "concepts": [],
+                    "sessions": [],
+                    "errors": [],
+                    "solutions": [],
+                    "artifacts": [],
+                }
 
             scored_concepts = []
             for concept in all_concepts:
@@ -389,10 +395,16 @@ def register_tools(mcp: FastMCP) -> None:
                         if title_tokens:
                             title_overlap = len(query_words.intersection(title_tokens))
                             # Use min() so partial exact matches against long queries aren't penalized
-                            title_score = min(1.0, title_overlap / max(1, min(len(query_words), len(title_tokens))))
+                            title_score = min(
+                                1.0,
+                                title_overlap / max(1, min(len(query_words), len(title_tokens))),
+                            )
 
                         content_overlap = len(query_words.intersection(content_tokens))
-                        content_score = min(1.0, content_overlap / max(1, min(len(query_words), len(content_tokens))))
+                        content_score = min(
+                            1.0,
+                            content_overlap / max(1, min(len(query_words), len(content_tokens))),
+                        )
                         keyword_score = min(1.0, 0.7 * title_score + 0.3 * content_score)
 
                     concept["context_score"] = min(
@@ -451,13 +463,15 @@ def register_tools(mcp: FastMCP) -> None:
             artifact_ids = [a["id"] for a in top_artifacts]
             artifact_details = []
             if artifact_ids:
+                score_by_id = {a["id"]: a["similarity"] for a in top_artifacts}
+                artifacts_by_id = {a["id"]: a for a in db.get_artifacts_by_ids(conn, artifact_ids)}
                 for aid in artifact_ids:
-                    a = db.get_artifact_by_id(conn, aid)
-                    if a:
-                        score = next((sa["similarity"] for sa in top_artifacts if sa["id"] == aid), 0)
-                        a["similarity"] = score
-                        a.pop("embedding", None)
-                        artifact_details.append(a)
+                    a = artifacts_by_id.get(aid)
+                    if not a:
+                        continue
+                    a["similarity"] = score_by_id.get(aid, 0)
+                    a.pop("embedding", None)
+                    artifact_details.append(a)
 
             metrics = {
                 "query_ms": round((perf_counter() - overall_start) * 1000, 2),
@@ -520,6 +534,7 @@ def register_tools(mcp: FastMCP) -> None:
             dict with matching errors and their solutions
         """
         try:
+            top_k = _clamp_limit(top_k, default=5, maximum=50)
             conn = db.get_connection()
             query_embedding = embeddings.embed(error_message)
 
@@ -1198,8 +1213,15 @@ def register_tools(mcp: FastMCP) -> None:
             embed_text = f"{title}: {description or ''} {content[:500]}"
             embedding = embeddings.embed(embed_text)
             artifact_id = db.add_artifact(
-                conn, artifact_type, title, description or "", content,
-                embedding, created_by, tags, file_path,
+                conn,
+                artifact_type,
+                title,
+                description or "",
+                content,
+                embedding,
+                created_by,
+                tags,
+                file_path,
             )
             return {"artifact_id": artifact_id}
         except Exception as e:
@@ -1298,7 +1320,14 @@ def register_tools(mcp: FastMCP) -> None:
                 new_embedding = embeddings.embed(f"{t}: {d} {c[:500]}")
 
             return db.update_artifact(
-                conn, artifact_id, title, description, content, new_embedding, tags, file_path,
+                conn,
+                artifact_id,
+                title,
+                description,
+                content,
+                new_embedding,
+                tags,
+                file_path,
             )
         except Exception as e:
             return {"error": str(e)}
@@ -1344,7 +1373,9 @@ def register_tools(mcp: FastMCP) -> None:
             elif target_type == "error":
                 return db.link_artifact_to_error(conn, artifact_id, target_id)
             else:
-                return {"error": f"Invalid target_type '{target_type}'. Use 'session', 'concept', or 'error'."}
+                return {
+                    "error": f"Invalid target_type '{target_type}'. Use 'session', 'concept', or 'error'."
+                }
         except Exception as e:
             return {"error": str(e)}
 
@@ -1378,6 +1409,12 @@ def register_tools(mcp: FastMCP) -> None:
             dict with list of artifacts
         """
         try:
+            if artifact_type not in db.VALID_ARTIFACT_TYPES:
+                return {
+                    "error": f"Invalid artifact type '{artifact_type}'. Valid types: {', '.join(sorted(db.VALID_ARTIFACT_TYPES))}",
+                    "artifacts": [],
+                }
+
             conn = db.get_connection()
             artifacts = db.list_artifacts_by_type(
                 conn, artifact_type, _clamp_limit(limit, default=50, maximum=500), offset

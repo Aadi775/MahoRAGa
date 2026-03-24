@@ -405,6 +405,30 @@ class TestDailyActivity:
         assert activity is not None
         assert activity["errors_count"] == 1
 
+    def test_daily_activity_updates_resolved_error_count_for_new_session(
+        self, test_connection, sample_project, mock_embed
+    ):
+        from src import db
+
+        s1 = db.add_session(test_connection, sample_project, "first", ["a.py"])
+        emb1 = mock_embed("first error")
+        e1 = db.add_error(test_connection, sample_project, s1, "first error", "ctx", "a.py", emb1)
+        db.add_solution(test_connection, e1, "fix first", "pass")
+        db.close_session(test_connection, s1)
+
+        s2 = db.add_session(test_connection, sample_project, "second", ["b.py"])
+        emb2 = mock_embed("second error")
+        e2 = db.add_error(test_connection, sample_project, s2, "second error", "ctx", "b.py", emb2)
+        db.add_solution(test_connection, e2, "fix second", "pass")
+        db.close_session(test_connection, s2)
+
+        session = db.get_session_by_id(test_connection, s1)
+        date = session["started_at"][:10]
+        activity = db.get_daily_activity_by_date(test_connection, date, sample_project)
+
+        assert activity is not None
+        assert activity["resolved_errors_count"] == 2
+
 
 class TestProjectHistory:
     def test_get_project_history(
@@ -497,3 +521,51 @@ class TestDeleteOperations:
 
         project = db.get_project_by_id(test_connection, sample_project)
         assert project is None
+
+    def test_delete_project_cascade_deletes_orphaned_artifacts(
+        self, test_connection, sample_project, mock_embed
+    ):
+        from src import db
+
+        sid = db.add_session(test_connection, sample_project, "artifact session", ["a.py"])
+        emb = mock_embed("orphan artifact")
+        aid = db.add_artifact(test_connection, "note", "Orphan", "desc", "content", emb)
+        db.link_artifact_to_session(test_connection, aid, sid)
+
+        result = db.delete_project_cascade(test_connection, sample_project)
+        assert result["deleted"] is True
+        assert result["deleted_artifacts"] >= 1
+        assert db.get_artifact_by_id(test_connection, aid) is None
+
+    def test_delete_old_sessions_recalculates_daily_activity(self, test_connection, sample_project):
+        from src import db
+
+        sid = db.add_session(test_connection, sample_project, "old session", ["a.py"])
+        test_connection.execute(
+            "MATCH (s:Session {id: $sid}) SET s.started_at = $started_at",
+            {"sid": sid, "started_at": "2020-01-01T00:00:00+00:00"},
+        )
+        db.close_session(test_connection, sid, ended_at="2020-01-01T00:00:00+00:00")
+
+        result = db.delete_old_sessions(test_connection, days_to_keep=1)
+        assert result["deleted_sessions"] >= 1
+
+    def test_delete_session_cascade_recalculates_daily_activity(
+        self, test_connection, sample_project, mock_embed
+    ):
+        from src import db
+
+        s1 = db.add_session(test_connection, sample_project, "session one", ["a.py"])
+        s2 = db.add_session(test_connection, sample_project, "session two", ["b.py"])
+
+        emb = mock_embed("error one")
+        db.add_error(test_connection, sample_project, s1, "error one", "ctx", "a.py", emb)
+
+        db.close_session(test_connection, s1)
+        db.close_session(test_connection, s2)
+
+        result = db.delete_session_cascade(test_connection, s1)
+        assert result["deleted"] is True
+
+        remaining = db.get_session_by_id(test_connection, s2)
+        assert remaining is not None

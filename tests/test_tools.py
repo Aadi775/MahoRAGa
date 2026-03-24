@@ -93,6 +93,9 @@ async def test_input_validation_for_core_tools(test_connection):
     bad_cleanup = await _call_tool_fn(mcp, "delete_old_sessions", "abc")
     assert "error" in bad_cleanup
 
+    bad_artifact_type = await _call_tool_fn(mcp, "list_artifacts", "banana", 5, 0)
+    assert "error" in bad_artifact_type
+
 
 @pytest.mark.asyncio
 async def test_concept_link_and_search_flow(test_connection):
@@ -253,6 +256,8 @@ async def test_stats_and_history_tools(test_connection):
 
     unresolved = await _call_tool_fn(mcp, "get_errors_without_solutions", project["project_id"])
     assert "errors" in unresolved
+    if unresolved["errors"]:
+        assert "message_embedding" not in unresolved["errors"][0]
 
     projects = await _call_tool_fn(mcp, "list_projects", 1, 0)
     assert len(projects["projects"]) <= 1
@@ -261,6 +266,29 @@ async def test_stats_and_history_tools(test_connection):
         mcp, "get_project_daily_activities", project["project_id"], 1, 0
     )
     assert len(activities["activities"]) <= 1
+
+
+@pytest.mark.asyncio
+async def test_get_error_solutions_clamps_top_k(test_connection):
+    mcp = FastMCP("test")
+    register_tools(mcp)
+
+    await _call_tool_fn(mcp, "add_project", "proj-clamp", "/tmp/proj-clamp", "desc")
+    session = await _call_tool_fn(mcp, "add_session", "proj-clamp", "work", ["q.py"])
+
+    for i in range(60):
+        err = await _call_tool_fn(
+            mcp,
+            "log_error",
+            session["session_id"],
+            f"ClampError {i}",
+            "ctx",
+            "q.py",
+        )
+        await _call_tool_fn(mcp, "log_solution", err["error_id"], "fix", "pass")
+
+    result = await _call_tool_fn(mcp, "get_error_solutions", "ClampError", 10000)
+    assert len(result["errors"]) <= 50
 
 
 @pytest.mark.asyncio

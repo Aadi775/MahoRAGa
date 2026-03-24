@@ -157,7 +157,7 @@ def init_schema(conn: kuzu.Connection) -> None:
                 PRIMARY KEY (id)
             )
         """)
-        
+
     try:
         conn.execute("ALTER TABLE DailyActivity ADD resolved_errors_count INT64 DEFAULT 0")
     except Exception:
@@ -236,6 +236,12 @@ def _parse_json_field(value: Any) -> Any:
         except (json.JSONDecodeError, TypeError):
             return value
     return value
+
+
+def _strip_error_embeddings(rows: list[dict]) -> list[dict]:
+    for row in rows:
+        row.pop("message_embedding", None)
+    return rows
 
 
 def _to_utc_iso(value: datetime) -> str:
@@ -474,12 +480,24 @@ def _update_or_create_daily_activity(conn: kuzu.Connection, session: dict) -> No
 
         error_delta = error_count if session_added else 0
 
+        resolved_result = conn.execute(
+            """MATCH (sol:Solution)-[:SOLVES]->(e:Error {session_id: $sid})
+               RETURN count(DISTINCT e)""",
+            {"sid": session_id},
+        )
+        resolved_count = resolved_result.get_next()[0] if resolved_result.has_next() else 0
+        resolved_delta = resolved_count if session_added else 0
+
         conn.execute(
-            "MATCH (da:DailyActivity {id: $id}) SET da.session_ids = $session_ids, da.errors_count = da.errors_count + $error_count",
+            """MATCH (da:DailyActivity {id: $id})
+               SET da.session_ids = $session_ids,
+                   da.errors_count = da.errors_count + $error_count,
+                   da.resolved_errors_count = da.resolved_errors_count + $resolved_count""",
             {
                 "id": da_id,
                 "session_ids": json.dumps(session_ids),
                 "error_count": error_delta,
+                "resolved_count": resolved_delta,
             },
         )
     else:
@@ -490,6 +508,12 @@ def _update_or_create_daily_activity(conn: kuzu.Connection, session: dict) -> No
             "MATCH (e:Error {session_id: $sid}) RETURN count(e)", {"sid": session_id}
         )
         initial_error_count = error_result.get_next()[0] if error_result.has_next() else 0
+        resolved_result = conn.execute(
+            """MATCH (sol:Solution)-[:SOLVES]->(e:Error {session_id: $sid})
+               RETURN count(DISTINCT e)""",
+            {"sid": session_id},
+        )
+        initial_resolved_count = resolved_result.get_next()[0] if resolved_result.has_next() else 0
 
         conn.execute(
             """CREATE (:DailyActivity {
@@ -499,7 +523,7 @@ def _update_or_create_daily_activity(conn: kuzu.Connection, session: dict) -> No
                 summary: $summary,
                 session_ids: $session_ids,
                 errors_count: $errors_count,
-                resolved_errors_count: 0
+                resolved_errors_count: $resolved_errors_count
             })""",
             {
                 "id": da_id,
@@ -508,6 +532,7 @@ def _update_or_create_daily_activity(conn: kuzu.Connection, session: dict) -> No
                 "summary": summary,
                 "session_ids": json.dumps(session_ids),
                 "errors_count": initial_error_count,
+                "resolved_errors_count": initial_resolved_count,
             },
         )
 
@@ -668,7 +693,7 @@ def add_solution(
            WHERE EXISTS { MATCH (sol:Solution)-[:SOLVES]->(e2) }
            WITH da, count(DISTINCT e2) as res_count
            SET da.resolved_errors_count = res_count""",
-        {"eid": error_id}
+        {"eid": error_id},
     )
 
     return solution_id
@@ -801,7 +826,7 @@ def get_errors_for_sessions(conn: kuzu.Connection, session_ids: list[str]) -> li
            RETURN DISTINCT e.*""",
         {"session_ids": session_ids},
     )
-    return _result_to_dicts(result)
+    return _strip_error_embeddings(_result_to_dicts(result))
 
 
 def get_errors_by_ids(conn: kuzu.Connection, error_ids: list[str]) -> list[dict]:
@@ -813,7 +838,22 @@ def get_errors_by_ids(conn: kuzu.Connection, error_ids: list[str]) -> list[dict]
            RETURN DISTINCT e.*""",
         {"error_ids": error_ids},
     )
-    return _result_to_dicts(result)
+    return _strip_error_embeddings(_result_to_dicts(result))
+
+
+def get_artifacts_by_ids(conn: kuzu.Connection, artifact_ids: list[str]) -> list[dict]:
+    if not artifact_ids:
+        return []
+    result = conn.execute(
+        """UNWIND $artifact_ids AS artifact_id
+           MATCH (a:Artifact {id: artifact_id})
+           RETURN DISTINCT a.*""",
+        {"artifact_ids": artifact_ids},
+    )
+    artifacts = _result_to_dicts(result)
+    for a in artifacts:
+        a["tags"] = _parse_json_field(a.get("tags"))
+    return artifacts
 
 
 def get_solutions_for_errors(conn: kuzu.Connection, error_ids: list[str]) -> list[dict]:
@@ -828,7 +868,9 @@ def get_solutions_for_errors(conn: kuzu.Connection, error_ids: list[str]) -> lis
     return _result_to_dicts(result)
 
 
-def get_project_history(conn: kuzu.Connection, project_name: str, limit: Optional[int] = None, offset: int = 0) -> dict:
+def get_project_history(
+    conn: kuzu.Connection, project_name: str, limit: Optional[int] = None, offset: int = 0
+) -> dict:
     project = get_project_by_name(conn, project_name)
     if not project:
         return {"error": f"Project '{project_name}' not found"}
@@ -861,7 +903,7 @@ def get_project_history(conn: kuzu.Connection, project_name: str, limit: Optiona
                RETURN e.* ORDER BY e.timestamp""",
             {"session_ids": session_ids},
         )
-        errors = _result_to_dicts(result)
+        errors = _strip_error_embeddings(_result_to_dicts(result))
 
     error_ids = [e["id"] for e in errors]
     solutions = []
@@ -996,9 +1038,9 @@ def delete_old_sessions(conn: kuzu.Connection, days_to_keep: int = 30) -> dict:
         """UNWIND $session_ids AS session_id
            MATCH (s:Session {id: session_id})-[:CONTRIBUTES_TO]->(da:DailyActivity)
            RETURN DISTINCT da.id""",
-        {"session_ids": session_ids}
+        {"session_ids": session_ids},
     )
-    da_ids = [row["da.id"] for row in _result_to_dicts(da_result)]
+    da_ids = [row["id"] for row in _result_to_dicts(da_result)]
 
     conn.execute(
         """UNWIND $session_ids AS session_id
@@ -1043,7 +1085,7 @@ def get_error_with_solutions(conn: kuzu.Connection, error_id: str) -> dict:
     if not errors:
         return {"error": f"Error {error_id} not found"}
 
-    error = errors[0]
+    error = _strip_error_embeddings(errors)[0]
     solutions = get_solutions_for_errors(conn, [error_id])
 
     return {
@@ -1228,8 +1270,17 @@ def delete_project_cascade(conn: kuzu.Connection, project_id: str) -> dict:
 
     deleted_errors = 0
     deleted_solutions = 0
+    deleted_artifacts = 0
 
     if session_ids:
+        artifact_result = conn.execute(
+            """UNWIND $session_ids AS session_id
+               MATCH (:Session {id: session_id})-[:USES_ARTIFACT]->(a:Artifact)
+               RETURN DISTINCT a.id""",
+            {"session_ids": session_ids},
+        )
+        artifact_ids = [row["id"] for row in _result_to_dicts(artifact_result)]
+
         error_result = conn.execute(
             """UNWIND $session_ids AS session_id
                MATCH (e:Error {session_id: session_id})
@@ -1271,6 +1322,26 @@ def delete_project_cascade(conn: kuzu.Connection, project_id: str) -> dict:
             {"session_ids": session_ids},
         )
 
+        if artifact_ids:
+            orphan_artifact_result = conn.execute(
+                """UNWIND $artifact_ids AS artifact_id
+                   MATCH (a:Artifact {id: artifact_id})
+                   WHERE NOT EXISTS { MATCH (:Session)-[:USES_ARTIFACT]->(a) }
+                     AND NOT EXISTS { MATCH (:Concept)-[:ILLUSTRATES]->(a) }
+                     AND NOT EXISTS { MATCH (a)-[:ATTACHED_TO]->(:Error) }
+                   RETURN DISTINCT a.id""",
+                {"artifact_ids": artifact_ids},
+            )
+            orphan_artifact_ids = [row["id"] for row in _result_to_dicts(orphan_artifact_result)]
+            deleted_artifacts = len(orphan_artifact_ids)
+            if orphan_artifact_ids:
+                conn.execute(
+                    """UNWIND $artifact_ids AS artifact_id
+                       MATCH (a:Artifact {id: artifact_id})
+                       DETACH DELETE a""",
+                    {"artifact_ids": orphan_artifact_ids},
+                )
+
     conn.execute(
         "MATCH (da:DailyActivity {project_id: $pid}) DETACH DELETE da", {"pid": project_id}
     )
@@ -1281,6 +1352,7 @@ def delete_project_cascade(conn: kuzu.Connection, project_id: str) -> dict:
         "deleted_sessions": len(session_ids),
         "deleted_errors": deleted_errors,
         "deleted_solutions": deleted_solutions,
+        "deleted_artifacts": deleted_artifacts,
     }
 
 
@@ -1323,7 +1395,11 @@ def batch_link_concepts_to_session(
             {"concept_ids": concept_ids, "sid": session_id},
         )
         linked = [row["id"] for row in _result_to_dicts(result)]
-        failed = [{"concept_id": cid, "error": "Not found or linking failed"} for cid in concept_ids if cid not in linked]
+        failed = [
+            {"concept_id": cid, "error": "Not found or linking failed"}
+            for cid in concept_ids
+            if cid not in linked
+        ]
     except Exception as e:
         return {"error": str(e)}
 
@@ -1398,9 +1474,10 @@ def cluster_errors_by_similarity(
     clusters = []
     used_indices = set()
     n = len(project_errors)
-    
+
     if n > 0:
         import numpy as np
+
         emb_matrix = np.array([e["embedding"] for e in project_errors])
         # L2 normalize
         norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
@@ -1408,16 +1485,16 @@ def cluster_errors_by_similarity(
         emb_matrix = emb_matrix / norms
         # compute all pairwise cosines
         sim_matrix = np.dot(emb_matrix, emb_matrix.T)
-        
+
         for i in range(n):
             if i in used_indices:
                 continue
-            
+
             # find all j where sim >= threshold
             members_idx = np.where(sim_matrix[i] >= similarity_threshold)[0]
             # filter out used
             members_idx = [j for j in members_idx if j not in used_indices]
-            
+
             if len(members_idx) > 1:
                 cluster_members = [project_errors[j]["id"] for j in members_idx]
                 cluster_messages = [project_errors[j]["message"] for j in members_idx]
@@ -1469,7 +1546,7 @@ def get_concept_growth_over_time(conn: kuzu.Connection, project_id: str) -> dict
         month = row[0]
         sids = _parse_json_field(row[1])
         res_count = row[2] if row[2] is not None else 0
-        
+
         monthly_sessions[month] = monthly_sessions.get(month, 0) + len(sids)
         monthly_resolved[month] = monthly_resolved.get(month, 0) + res_count
 
@@ -1561,7 +1638,7 @@ def get_errors_for_session(conn: kuzu.Connection, session_id: str) -> list[dict]
         "MATCH (e:Error {session_id: $sid}) RETURN e.* ORDER BY e.timestamp",
         {"sid": session_id},
     )
-    return _result_to_dicts(result)
+    return _strip_error_embeddings(_result_to_dicts(result))
 
 
 def get_concepts_for_session(conn: kuzu.Connection, session_id: str) -> list[dict]:
@@ -1589,7 +1666,7 @@ def get_unresolved_errors(conn: kuzu.Connection, project_id: Optional[str] = Non
                WHERE NOT EXISTS { MATCH (sol:Solution)-[:SOLVES]->(e) }
                RETURN e.* ORDER BY e.timestamp DESC"""
         )
-    return _result_to_dicts(result)
+    return _strip_error_embeddings(_result_to_dicts(result))
 
 
 def get_recent_errors(conn: kuzu.Connection, limit: int = 10) -> list[dict]:
@@ -1598,7 +1675,7 @@ def get_recent_errors(conn: kuzu.Connection, limit: int = 10) -> list[dict]:
         "MATCH (e:Error) RETURN e.* ORDER BY e.timestamp DESC LIMIT $limit",
         {"limit": safe_limit},
     )
-    return _result_to_dicts(result)
+    return _strip_error_embeddings(_result_to_dicts(result))
 
 
 def delete_session_cascade(conn: kuzu.Connection, session_id: str) -> dict:
@@ -1633,9 +1710,9 @@ def delete_session_cascade(conn: kuzu.Connection, session_id: str) -> dict:
     da_result = conn.execute(
         """MATCH (s:Session {id: $sid})-[:CONTRIBUTES_TO]->(da:DailyActivity)
            RETURN da.id""",
-        {"sid": session_id}
+        {"sid": session_id},
     )
-    da_ids = [row["da.id"] for row in _result_to_dicts(da_result)]
+    da_ids = [row["id"] for row in _result_to_dicts(da_result)]
 
     conn.execute("MATCH (e:Error {session_id: $sid}) DETACH DELETE e", {"sid": session_id})
 
@@ -1644,9 +1721,7 @@ def delete_session_cascade(conn: kuzu.Connection, session_id: str) -> dict:
     conn.execute(
         "MATCH (s:Session {id: $sid})-[r:CONTRIBUTES_TO]->() DELETE r", {"sid": session_id}
     )
-    conn.execute(
-        "MATCH (s:Session {id: $sid})-[r:USES_ARTIFACT]->() DELETE r", {"sid": session_id}
-    )
+    conn.execute("MATCH (s:Session {id: $sid})-[r:USES_ARTIFACT]->() DELETE r", {"sid": session_id})
     conn.execute("MATCH (s:Session {id: $sid}) DETACH DELETE s", {"sid": session_id})
 
     for da_id in da_ids:
@@ -1658,42 +1733,46 @@ def delete_session_cascade(conn: kuzu.Connection, session_id: str) -> dict:
         "deleted_solutions": deleted_solutions,
     }
 
+
 def _recalculate_daily_activity(conn: kuzu.Connection, da_id: str) -> None:
     result = conn.execute(
         """MATCH (s:Session)-[:CONTRIBUTES_TO]->(da:DailyActivity {id: $da_id})
-           RETURN s.id""", {"da_id": da_id}
+           RETURN s.id""",
+        {"da_id": da_id},
     )
-    sids = [row["s.id"] for row in _result_to_dicts(result)]
-    
+    sids = [row["id"] for row in _result_to_dicts(result)]
+
     if not sids:
         conn.execute("MATCH (da:DailyActivity {id: $da_id}) DETACH DELETE da", {"da_id": da_id})
         return
-        
+
     error_res = conn.execute(
         """MATCH (s:Session)-[:CONTRIBUTES_TO]->(da:DailyActivity {id: $da_id})
            MATCH (e:Error)-[:OCCURRED_IN]->(s)
-           RETURN count(DISTINCT e)""", {"da_id": da_id}
+           RETURN count(DISTINCT e)""",
+        {"da_id": da_id},
     )
     err_count = error_res.get_next()[0] if error_res.has_next() else 0
-    
+
     res_err_res = conn.execute(
         """MATCH (s:Session)-[:CONTRIBUTES_TO]->(da:DailyActivity {id: $da_id})
            MATCH (sol:Solution)-[:SOLVES]->(e:Error)-[:OCCURRED_IN]->(s)
-           RETURN count(DISTINCT e)""", {"da_id": da_id}
+           RETURN count(DISTINCT e)""",
+        {"da_id": da_id},
     )
     res_err_count = res_err_res.get_next()[0] if res_err_res.has_next() else 0
-    
+
     conn.execute(
         """MATCH (da:DailyActivity {id: $da_id})
            SET da.session_ids = $sids, 
                da.errors_count = $err_count, 
                da.resolved_errors_count = $res_count""",
         {
-            "da_id": da_id, 
-            "sids": json.dumps(sids), 
-            "err_count": err_count, 
-            "res_count": res_err_count
-        }
+            "da_id": da_id,
+            "sids": json.dumps(sids),
+            "err_count": err_count,
+            "res_count": res_err_count,
+        },
     )
 
 
@@ -1767,8 +1846,16 @@ def update_daily_activity_summary(conn: kuzu.Connection, activity_id: str, summa
 
 
 VALID_ARTIFACT_TYPES = {
-    "datasheet", "config", "log", "code", "snippet",
-    "diagram", "note", "reference", "template", "other",
+    "datasheet",
+    "config",
+    "log",
+    "code",
+    "snippet",
+    "diagram",
+    "note",
+    "reference",
+    "template",
+    "other",
 }
 
 
