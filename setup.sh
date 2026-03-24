@@ -19,8 +19,13 @@ pip install -r requirements.txt
 pip install -e .
 
 echo "[4/4] Setting up MCP Server..."
-# FastMCP CLI installs the MCP server config into Claude Desktop/Cursor
-python -m fastmcp install src.main:mcp --name "MahoRAGa Knowledge Graph"
+# FastMCP CLI installs the MCP server config into Claude Desktop/Cursor.
+# Avoid duplicate entries on repeated setup runs.
+if .venv/bin/fastmcp discover --source claude-desktop --json | grep -q '"MahoRAGa Knowledge Graph"'; then
+    echo "MCP server already registered in Claude Desktop; skipping install."
+else
+    .venv/bin/fastmcp install claude-desktop src.main:mcp --name "MahoRAGa Knowledge Graph"
+fi
 
 echo "=========================================="
 echo " Setup complete! The MCP server is ready."
