@@ -4,6 +4,7 @@ import uuid
 import atexit
 import os
 import platform
+import logging
 from . import embeddings as emb
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -15,6 +16,7 @@ NEAR_DUP_SCAN_LIMIT = 100
 _DB_SINGLETON: Optional[kuzu.Database] = None
 _DB_SINGLETON_PATH: Optional[str] = None
 _SCHEMA_READY_PATHS: set[str] = set()
+_LOGGER = logging.getLogger(__name__)
 
 
 def _close_db_singleton() -> None:
@@ -77,8 +79,8 @@ def init_schema(conn: kuzu.Connection) -> None:
                 existing_node_tables.add(table_name)
             elif table_type == "REL":
                 existing_rel_tables.add(table_name)
-    except Exception:
-        pass
+    except Exception as e:
+        _LOGGER.warning("Failed to inspect existing schema tables: %s", e)
 
     if "Project" not in existing_node_tables:
         conn.execute("""
@@ -160,8 +162,8 @@ def init_schema(conn: kuzu.Connection) -> None:
 
     try:
         conn.execute("ALTER TABLE DailyActivity ADD resolved_errors_count INT64 DEFAULT 0")
-    except Exception:
-        pass
+    except Exception as e:
+        _LOGGER.warning("DailyActivity migration skipped or failed: %s", e)
 
     if "HAS_PROJECT" not in existing_rel_tables:
         conn.execute("CREATE REL TABLE HAS_PROJECT(FROM Session TO Project)")
@@ -636,7 +638,7 @@ def add_error(
     )
 
     conn.execute(
-        "MATCH (e:Error {id: $eid}), (s:Session {id: $sid}) CREATE (e)-[:OCCURRED_IN]->(s)",
+        "MATCH (e:Error {id: $eid}), (s:Session {id: $sid}) MERGE (e)-[:OCCURRED_IN]->(s)",
         {"eid": error_id, "sid": session_id},
     )
 
@@ -681,7 +683,7 @@ def add_solution(
     )
 
     conn.execute(
-        "MATCH (sol:Solution {id: $sol_id}), (e:Error {id: $eid}) CREATE (sol)-[:SOLVES]->(e)",
+        "MATCH (sol:Solution {id: $sol_id}), (e:Error {id: $eid}) MERGE (sol)-[:SOLVES]->(e)",
         {"sol_id": solution_id, "eid": error_id},
     )
 
