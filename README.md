@@ -63,17 +63,39 @@ Both scripts create a `.venv`, install all dependencies, and configure the MCP s
 
 ## Connect to Your Agent
 
-### Claude Code / Claude Desktop
+You can run MahoRAGa in two different modes depending on whether you want one agent, or multiple agents/windows sharing the same brain.
 
-Add this to your MCP config (`.mcp.json` or `~/.claude.json`):
+### Mode 1: Single Client (stdio)
+
+If you only use one AI coding agent (e.g., just Claude Desktop), you can let the client spawn MahoRAGa directly. Add this to your MCP config (`.mcp.json` or `~/.claude.json`):
 
 ```json
 {
   "mcpServers": {
     "mahoraga": {
-      "type": "stdio",
-      "command": "/path/to/MahoRAGa/.venv/bin/python",
-      "args": ["-m", "src.server"]
+      "command": "/path/to/MahoRAGa/.venv/bin/mahoraga-kg"
+    }
+  }
+}
+```
+
+### Mode 2: Multi-Client Shared Brain (SSE)
+
+KùzuDB uses file-level locking, meaning if you try to open MahoRAGa in Cursor _and_ OpenCode at the same time using `stdio`, they will crash fighting over the lock. Instead, start MahoRAGa as a shared HTTP server in the background:
+
+```bash
+# Start the shared server manually in a terminal
+mahoraga-kg --transport sse --port 8000
+```
+
+Then, configure all your MCP clients to connect to this shared endpoint instead of launching their own process:
+
+```json
+{
+  "mcpServers": {
+    "mahoraga-remote": {
+      "type": "remote",
+      "url": "http://localhost:8000/sse"
     }
   }
 }
@@ -81,7 +103,7 @@ Add this to your MCP config (`.mcp.json` or `~/.claude.json`):
 
 ### Any MCP-Compatible Client
 
-MahoRAGa speaks **standard MCP over stdio**. Point your client's server config to the Python module and you're set.
+MahoRAGa speaks **standard MCP**. Point your client to either the CLI executable or the SSE endpoint and you're set.
 
 ---
 
