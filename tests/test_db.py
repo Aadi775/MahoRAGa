@@ -121,6 +121,14 @@ class TestProjectOperations:
         project = db.get_project_by_id(test_connection, p1)
         assert project is not None
 
+    def test_update_project_missing_returns_error_and_not_updated(self, test_connection):
+        from src import db
+
+        result = db.update_project(test_connection, "missing-project-id", name="new-name")
+
+        assert "error" in result
+        assert result.get("updated") is False
+
 
 class TestSessionOperations:
     def test_add_session(self, test_connection, sample_project):

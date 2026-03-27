@@ -23,8 +23,8 @@ const Navbar = () => {
         <div className="flex justify-between h-16 items-center">
           <Link to="/" className="flex items-center gap-2 group">
             <motion.div
-              whileHover={{ rotate: 180 }}
-              transition={{ duration: 0.3 }}
+              whileHover={{ rotate: 30 }}
+              transition={{ duration: 0.2 }}
               className="bg-brand-500 text-white p-1.5 rounded-lg shadow-lg shadow-brand-500/30"
             >
               <Database size={24} />
@@ -76,6 +76,8 @@ const Navbar = () => {
             <button 
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
               className="text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+              aria-label={mobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
+              aria-expanded={mobileMenuOpen}
             >
               {mobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
             </button>

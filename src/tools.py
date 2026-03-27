@@ -3,6 +3,7 @@ from . import db
 from . import embeddings
 from datetime import datetime, timezone
 import math
+import os
 import re
 import numpy as np
 from time import perf_counter
@@ -18,14 +19,71 @@ SEARCH_WEIGHTS = {
 
 SEARCH_EMBEDDING_SCAN_LIMIT = 5000
 
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        return default
+
+
+MAX_ARTIFACT_CONTENT_BYTES = _env_int("MAHORAGA_MAX_ARTIFACT_CONTENT_BYTES", 1000000)
+
 STOP_WORDS = {
-    "the", "and", "for", "with", "from", "into", "that", "this",
-    "what", "when", "where", "how", "why", "use", "using",
-    "are", "was", "were", "been", "being", "have", "has", "had",
-    "does", "did", "will", "would", "shall", "should", "may",
-    "might", "must", "can", "could", "not", "but", "its", "also",
-    "about", "than", "then", "just", "more", "some", "other",
-    "all", "any", "each", "every", "such", "very",
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "into",
+    "that",
+    "this",
+    "what",
+    "when",
+    "where",
+    "how",
+    "why",
+    "use",
+    "using",
+    "are",
+    "was",
+    "were",
+    "been",
+    "being",
+    "have",
+    "has",
+    "had",
+    "does",
+    "did",
+    "will",
+    "would",
+    "shall",
+    "should",
+    "may",
+    "might",
+    "must",
+    "can",
+    "could",
+    "not",
+    "but",
+    "its",
+    "also",
+    "about",
+    "than",
+    "then",
+    "just",
+    "more",
+    "some",
+    "other",
+    "all",
+    "any",
+    "each",
+    "every",
+    "such",
+    "very",
 }
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -53,6 +111,30 @@ def _clamp_limit(value: int, default: int = 10, maximum: int = 100) -> int:
     except Exception:
         return default
     return max(1, min(parsed, maximum))
+
+
+def _empty_search_response(error: Optional[str] = None, metrics: Optional[dict] = None) -> dict:
+    response = {
+        "concepts": [],
+        "sessions": [],
+        "errors": [],
+        "solutions": [],
+        "artifacts": [],
+        "metrics": metrics or {},
+    }
+    if error:
+        response["error"] = error
+    return response
+
+
+def _validate_artifact_content_size(content: str) -> Optional[str]:
+    content_size = len(content.encode("utf-8"))
+    if content_size > MAX_ARTIFACT_CONTENT_BYTES:
+        return (
+            f"content exceeds maximum size of {MAX_ARTIFACT_CONTENT_BYTES} bytes "
+            f"(got {content_size} bytes)"
+        )
+    return None
 
 
 def _vectorized_cosine_scores(
@@ -323,14 +405,7 @@ def register_tools(mcp: FastMCP) -> None:
         """
         try:
             if _is_blank(query):
-                return {
-                    "error": "query cannot be empty",
-                    "concepts": [],
-                    "sessions": [],
-                    "errors": [],
-                    "solutions": [],
-                    "metrics": {},
-                }
+                return _empty_search_response(error="query cannot be empty")
             top_k = _clamp_limit(top_k, default=5, maximum=50)
 
             overall_start = perf_counter()
@@ -341,13 +416,17 @@ def register_tools(mcp: FastMCP) -> None:
             all_concepts = db.get_all_concept_embeddings(conn, limit=SEARCH_EMBEDDING_SCAN_LIMIT)
             all_artifacts = db.get_all_artifact_embeddings(conn, limit=SEARCH_EMBEDDING_SCAN_LIMIT)
             if not all_concepts and not all_artifacts:
-                return {
-                    "concepts": [],
-                    "sessions": [],
-                    "errors": [],
-                    "solutions": [],
-                    "artifacts": [],
-                }
+                return _empty_search_response(
+                    metrics={
+                        "query_ms": round((perf_counter() - overall_start) * 1000, 2),
+                        "concept_candidates": 0,
+                        "concept_results": 0,
+                        "session_results": 0,
+                        "error_results": 0,
+                        "solution_results": 0,
+                        "artifact_results": 0,
+                    }
+                )
 
             scored_concepts = []
             concept_scores = _vectorized_cosine_scores(query_embedding, all_concepts)
@@ -533,15 +612,7 @@ def register_tools(mcp: FastMCP) -> None:
                 "metrics": metrics,
             }
         except Exception as e:
-            return {
-                "error": str(e),
-                "concepts": [],
-                "sessions": [],
-                "errors": [],
-                "solutions": [],
-                "artifacts": [],
-                "metrics": {},
-            }
+            return _empty_search_response(error=str(e))
 
     @mcp.tool
     def get_project_history(project_name: str, limit: int = 50, offset: int = 0) -> dict:
@@ -1249,6 +1320,9 @@ def register_tools(mcp: FastMCP) -> None:
                 return {"error": "title cannot be empty"}
             if _is_blank(content):
                 return {"error": "content cannot be empty"}
+            size_error = _validate_artifact_content_size(content)
+            if size_error:
+                return {"error": size_error}
             if artifact_type not in db.VALID_ARTIFACT_TYPES:
                 return {
                     "error": f"Invalid artifact type '{artifact_type}'. Valid types: {', '.join(sorted(db.VALID_ARTIFACT_TYPES))}"
@@ -1353,6 +1427,10 @@ def register_tools(mcp: FastMCP) -> None:
                 return {"error": "title cannot be empty"}
             if content is not None and _is_blank(content):
                 return {"error": "content cannot be empty"}
+            if content is not None:
+                size_error = _validate_artifact_content_size(content)
+                if size_error:
+                    return {"error": size_error}
 
             conn = db.get_connection()
             artifact = db.get_artifact_by_id(conn, artifact_id)

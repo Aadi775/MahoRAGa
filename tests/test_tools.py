@@ -82,6 +82,14 @@ async def test_input_validation_for_core_tools(test_connection):
 
     bad_search = await _call_tool_fn(mcp, "search", "", 5)
     assert "error" in bad_search
+    assert {
+        "concepts",
+        "sessions",
+        "errors",
+        "solutions",
+        "artifacts",
+        "metrics",
+    }.issubset(bad_search.keys())
 
     session = await _call_tool_fn(mcp, "add_session", "proj-valid", "summary", ["a.py"])
     bad_error = await _call_tool_fn(mcp, "log_error", session["session_id"], "", "ctx", "a.py")
@@ -418,3 +426,63 @@ async def test_search_uses_bounded_embedding_scans(test_connection, monkeypatch)
     assert calls["concept"] == SEARCH_EMBEDDING_SCAN_LIMIT
     assert calls["artifact"] == SEARCH_EMBEDDING_SCAN_LIMIT
     assert calls["error"] == SEARCH_EMBEDDING_SCAN_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_search_empty_db_has_normalized_response(test_connection):
+    mcp = FastMCP("test")
+    register_tools(mcp)
+
+    result = await _call_tool_fn(mcp, "search", "anything", 5)
+    assert {
+        "concepts",
+        "sessions",
+        "errors",
+        "solutions",
+        "artifacts",
+        "metrics",
+    }.issubset(result.keys())
+    assert result["concepts"] == []
+    assert result["artifacts"] == []
+
+
+@pytest.mark.asyncio
+async def test_search_exception_path_has_normalized_response(test_connection, monkeypatch):
+    from src import embeddings as embeddings_module
+
+    mcp = FastMCP("test")
+    register_tools(mcp)
+
+    def boom(_query: str):
+        raise RuntimeError("internal failure")
+
+    monkeypatch.setattr(embeddings_module, "embed", boom)
+
+    result = await _call_tool_fn(mcp, "search", "jwt refresh", 5)
+    assert "error" in result
+    assert {
+        "concepts",
+        "sessions",
+        "errors",
+        "solutions",
+        "artifacts",
+        "metrics",
+    }.issubset(result.keys())
+
+
+@pytest.mark.asyncio
+async def test_update_project_missing_returns_error(test_connection):
+    mcp = FastMCP("test")
+    register_tools(mcp)
+
+    result = await _call_tool_fn(
+        mcp,
+        "update_project",
+        "missing-project-id",
+        "new-name",
+        None,
+        None,
+        None,
+    )
+    assert "error" in result
+    assert result.get("updated") is False

@@ -68,6 +68,7 @@ class TestArtifactCRUD:
         assert result == {"updated": True}
 
         artifact = db.get_artifact_by_id(test_connection, aid)
+        assert artifact is not None
         assert artifact["title"] == "Updated Title"
         assert artifact["content"] == "updated content"
         assert "updated" in artifact["tags"]
@@ -313,6 +314,83 @@ async def test_artifact_tool_validation(test_connection):
         mcp, "add_artifact", artifact_type="note", title="", description="d", content="c"
     )
     assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_artifact_content_size_guardrail_add_and_update(test_connection, monkeypatch):
+    from fastmcp import FastMCP
+    from src import tools as tools_module
+    from src.tools import register_tools
+
+    monkeypatch.setattr(tools_module, "MAX_ARTIFACT_CONTENT_BYTES", 16)
+
+    mcp = FastMCP("test")
+    register_tools(mcp)
+
+    too_large = await _call_tool_fn(
+        mcp,
+        "add_artifact",
+        artifact_type="note",
+        title="too big",
+        description="d",
+        content="x" * 17,
+    )
+    assert "error" in too_large
+    assert "maximum size" in too_large["error"]
+
+    created = await _call_tool_fn(
+        mcp,
+        "add_artifact",
+        artifact_type="note",
+        title="ok",
+        description="d",
+        content="x" * 16,
+    )
+    assert "artifact_id" in created
+
+    update_too_large = await _call_tool_fn(
+        mcp,
+        "update_artifact",
+        created["artifact_id"],
+        None,
+        None,
+        "y" * 17,
+    )
+    assert "error" in update_too_large
+    assert "maximum size" in update_too_large["error"]
+
+
+@pytest.mark.asyncio
+async def test_artifact_content_size_guardrail_uses_utf8_bytes(test_connection, monkeypatch):
+    from fastmcp import FastMCP
+    from src import tools as tools_module
+    from src.tools import register_tools
+
+    monkeypatch.setattr(tools_module, "MAX_ARTIFACT_CONTENT_BYTES", 4)
+
+    mcp = FastMCP("test")
+    register_tools(mcp)
+
+    ok = await _call_tool_fn(
+        mcp,
+        "add_artifact",
+        artifact_type="note",
+        title="utf8-ok",
+        description="d",
+        content="🚀",  # 4 bytes in UTF-8
+    )
+    assert "artifact_id" in ok
+
+    too_large = await _call_tool_fn(
+        mcp,
+        "add_artifact",
+        artifact_type="note",
+        title="utf8-too-large",
+        description="d",
+        content="🚀🚀",  # 8 bytes in UTF-8
+    )
+    assert "error" in too_large
+    assert "maximum size" in too_large["error"]
 
     # Empty content
     result = await _call_tool_fn(

@@ -7,9 +7,17 @@ import { ArrowRight, Code, Zap, Database } from 'lucide-react';
 
 gsap.registerPlugin(ScrollTrigger);
 
+// Performance constants
+const MAX_PARTICLES = 80;
+const MIN_PARTICLES = 30;
+const CONNECTION_DISTANCE = 120;
+const CONNECTION_DISTANCE_SQ = CONNECTION_DISTANCE * CONNECTION_DISTANCE;
+const PARTICLE_RADIUS = 2;
+
 const Home = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const isVisibleRef = useRef(true);
 
   // 2D Canvas Knowledge Graph Particles Background
   useEffect(() => {
@@ -20,6 +28,7 @@ const Home = () => {
 
     let particles: Particle[] = [];
     let animationFrameId: number;
+    let isRunning = true;
 
     const resize = () => {
       canvas.width = window.innerWidth;
@@ -30,6 +39,7 @@ const Home = () => {
     resize();
 
     const canvasEl = canvas;
+    const ctxLocal = ctx; // Capture for TypeScript
 
     class Particle {
       x: number;
@@ -43,7 +53,7 @@ const Home = () => {
         this.y = Math.random() * canvasEl.height;
         this.vx = (Math.random() - 0.5) * 0.5;
         this.vy = (Math.random() - 0.5) * 0.5;
-        this.radius = Math.random() * 2 + 1;
+        this.radius = Math.random() * PARTICLE_RADIUS + 1;
       }
 
       update() {
@@ -55,52 +65,80 @@ const Home = () => {
       }
 
       draw() {
-        if (!ctx) return;
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(59, 130, 246, 0.4)';
-        ctx.fill();
+        if (!ctxLocal) return;
+        ctxLocal.beginPath();
+        ctxLocal.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        ctxLocal.fillStyle = 'rgba(59, 130, 246, 0.4)';
+        ctxLocal.fill();
       }
     }
 
     const initParticles = () => {
       particles = [];
-      const numParticles = Math.floor(window.innerWidth * window.innerHeight / 15000);
+      // Calculate particles based on screen size, but cap at MAX_PARTICLES
+      const screenParticles = Math.floor(window.innerWidth * window.innerHeight / 15000);
+      const numParticles = Math.min(Math.max(screenParticles, MIN_PARTICLES), MAX_PARTICLES);
       for (let i = 0; i < numParticles; i++) {
         particles.push(new Particle());
       }
     };
 
     const animate = () => {
-      ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+      if (!isRunning) return;
+      
+      // Pause animation when tab is hidden
+      if (!isVisibleRef.current) {
+        animationFrameId = requestAnimationFrame(animate);
+        return;
+      }
 
-      for (let i = 0; i < particles.length; i++) {
-        particles[i].update();
-        particles[i].draw();
+      if (!ctxLocal) return;
+      ctxLocal.clearRect(0, 0, canvasEl.width, canvasEl.height);
 
-        for (let j = i; j < particles.length; j++) {
-          const dx = particles[i].x - particles[j].x;
-          const dy = particles[i].y - particles[j].y;
-          const distance = Math.sqrt(dx * dx + dy * dy);
+      // Optimized O(n^2) with squared distance to avoid Math.sqrt
+      const len = particles.length;
+      for (let i = 0; i < len; i++) {
+        const p1 = particles[i];
+        p1.update();
+        p1.draw();
 
-          if (distance < 120) {
-            ctx.beginPath();
-            ctx.strokeStyle = `rgba(59, 130, 246, ${0.15 - distance / 800})`;
-            ctx.lineWidth = 1;
-            ctx.moveTo(particles[i].x, particles[i].y);
-            ctx.lineTo(particles[j].x, particles[j].y);
-            ctx.stroke();
+        // Only check connections for a subset to reduce O(n^2) load
+        // Using a step reduces checks while maintaining visual effect
+        for (let j = i + 1; j < len; j++) {
+          const p2 = particles[j];
+          const dx = p1.x - p2.x;
+          const dy = p1.y - p2.y;
+          
+          // Use squared distance comparison - avoids expensive Math.sqrt
+          const distSq = dx * dx + dy * dy;
+          
+          if (distSq < CONNECTION_DISTANCE_SQ) {
+            const opacity = 0.15 - (Math.sqrt(distSq) / 800);
+            ctxLocal.beginPath();
+            ctxLocal.strokeStyle = `rgba(59, 130, 246, ${Math.max(0, opacity)})`;
+            ctxLocal.lineWidth = 1;
+            ctxLocal.moveTo(p1.x, p1.y);
+            ctxLocal.lineTo(p2.x, p2.y);
+            ctxLocal.stroke();
           }
         }
       }
       animationFrameId = requestAnimationFrame(animate);
     };
 
+    // Handle page visibility - pause when tab is hidden
+    const handleVisibilityChange = () => {
+      isVisibleRef.current = !document.hidden;
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     initParticles();
     animate();
 
     return () => {
+      isRunning = false;
       window.removeEventListener('resize', resize);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       cancelAnimationFrame(animationFrameId);
     };
   }, []);

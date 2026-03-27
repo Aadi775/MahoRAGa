@@ -178,9 +178,7 @@ def init_schema(conn: kuzu.Connection) -> None:
             conn.execute("MATCH (da:DailyActivity) RETURN da.resolved_errors_count LIMIT 1")
         except Exception:
             try:
-                conn.execute(
-                    "ALTER TABLE DailyActivity ADD resolved_errors_count INT64 DEFAULT 0"
-                )
+                conn.execute("ALTER TABLE DailyActivity ADD resolved_errors_count INT64 DEFAULT 0")
                 _LOGGER.info("Migrated DailyActivity: added resolved_errors_count column")
             except Exception as e:
                 _LOGGER.error("DailyActivity migration failed: %s", e)
@@ -338,6 +336,10 @@ def update_project(
     description: Optional[str] = None,
     merge_project_id: Optional[str] = None,
 ) -> dict:
+    project = get_project_by_id(conn, project_id)
+    if not project:
+        return {"error": f"Project {project_id} not found", "updated": False}
+
     if merge_project_id:
         if project_id == merge_project_id:
             return {"error": "Cannot merge a project into itself"}

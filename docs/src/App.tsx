@@ -1,11 +1,24 @@
 import { Routes, Route, useLocation } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
+import { lazy, Suspense } from 'react';
 import Navbar from './components/Navbar';
 import Sidebar from './components/Sidebar';
-import Home from './pages/Home';
-import GettingStarted from './pages/GettingStarted';
-import Architecture from './pages/Architecture';
-import ApiReference from './pages/ApiReference';
+
+// Code splitting with React.lazy for route-level code splitting
+const Home = lazy(() => import('./pages/Home'));
+const GettingStarted = lazy(() => import('./pages/GettingStarted'));
+const Architecture = lazy(() => import('./pages/Architecture'));
+const ApiReference = lazy(() => import('./pages/ApiReference'));
+
+// Loading fallback component
+const PageLoader = () => (
+  <div className="flex-1 flex items-center justify-center min-h-[50vh]">
+    <div className="flex flex-col items-center gap-3">
+      <div className="w-8 h-8 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+      <span className="text-sm text-slate-500 dark:text-slate-400">Loading...</span>
+    </div>
+  </div>
+);
 
 function NotFound() {
   return (
@@ -32,13 +45,15 @@ function App() {
         
         <main className={`flex-1 w-full flex flex-col ${location.pathname !== '/' ? 'md:ml-64' : ''}`}>
           <AnimatePresence mode="wait">
-            <Routes location={location} key={location.pathname}>
-              <Route path="/" element={<Home />} />
-              <Route path="/docs/getting-started" element={<GettingStarted />} />
-              <Route path="/docs/architecture" element={<Architecture />} />
-              <Route path="/docs/api-reference" element={<ApiReference />} />
-              <Route path="*" element={<NotFound />} />
-            </Routes>
+            <Suspense fallback={<PageLoader />}>
+              <Routes location={location} key={location.pathname}>
+                <Route path="/" element={<Home />} />
+                <Route path="/docs/getting-started" element={<GettingStarted />} />
+                <Route path="/docs/architecture" element={<Architecture />} />
+                <Route path="/docs/api-reference" element={<ApiReference />} />
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </Suspense>
           </AnimatePresence>
         </main>
       </div>
