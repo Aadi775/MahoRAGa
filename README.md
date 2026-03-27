@@ -105,6 +105,37 @@ Then, configure all your MCP clients to connect to this shared endpoint instead 
 
 MahoRAGa speaks **standard MCP**. Point your client to either the CLI executable or the SSE endpoint and you're set.
 
+### Optional: Auto-start SSE on boot (systemd user service)
+
+If you want the SSE server to start automatically when your laptop boots:
+
+```bash
+# Install + enable + start user service
+chmod +x install_sse_autostart.sh uninstall_sse_autostart.sh
+./install_sse_autostart.sh
+```
+
+This creates `~/.config/systemd/user/mahoraga-sse.service`, enables it, and starts it immediately.
+
+Useful commands:
+
+```bash
+systemctl --user status mahoraga-sse.service
+journalctl --user -u mahoraga-sse.service -f
+```
+
+To remove it:
+
+```bash
+./uninstall_sse_autostart.sh
+```
+
+To run user services even before login, enable linger once:
+
+```bash
+sudo loginctl enable-linger $USER
+```
+
 ---
 
 ## MCP Tools Reference
