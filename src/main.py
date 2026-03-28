@@ -4,8 +4,6 @@ import os
 import threading
 import time
 from collections import deque
-from json import dumps
-
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -38,87 +36,27 @@ DEFAULT_RATE_LIMIT_REQUESTS = _env_int("MAHORAGA_RATE_LIMIT_REQUESTS", 60)
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = _env_int("MAHORAGA_RATE_LIMIT_WINDOW_SECONDS", 60)
 
 
-async def _send_json(scope, send, status_code: int, payload: dict) -> None:
-    body = dumps(payload).encode("utf-8")
-    await send(
-        {
-            "type": "http.response.start",
-            "status": status_code,
-            "headers": [
-                (b"content-type", b"application/json"),
-                (b"content-length", str(len(body)).encode("ascii")),
-            ],
-        }
-    )
-    await send({"type": "http.response.body", "body": body})
-
-
-class BodySizeLimitMiddleware:
+class BodySizeLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, max_body_bytes: int = DEFAULT_MAX_HTTP_BODY_BYTES):
-        self.app = app
+        super().__init__(app)
         self.max_body_bytes = max_body_bytes
 
-    async def __call__(self, scope, receive, send):
-        if scope.get("type") != "http":
-            await self.app(scope, receive, send)
-            return
-
-        headers = {
-            key.decode("latin1").lower(): value.decode("latin1")
-            for key, value in scope.get("headers", [])
-        }
-        content_length = headers.get("content-length")
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
         if content_length:
             try:
                 if int(content_length) > self.max_body_bytes:
-                    await _send_json(
-                        scope,
-                        send,
-                        413,
+                    return JSONResponse(
                         {
                             "error": "request body too large",
                             "max_bytes": self.max_body_bytes,
                         },
+                        status_code=413,
                     )
-                    return
             except ValueError:
-                await _send_json(scope, send, 400, {"error": "invalid content-length header"})
-                return
+                return JSONResponse({"error": "invalid content-length header"}, status_code=400)
 
-        total = 0
-        chunks = []
-        while True:
-            message = await receive()
-            if message["type"] != "http.request":
-                continue
-            body = message.get("body", b"")
-            total += len(body)
-            if total > self.max_body_bytes:
-                await _send_json(
-                    scope,
-                    send,
-                    413,
-                    {
-                        "error": "request body too large",
-                        "max_bytes": self.max_body_bytes,
-                    },
-                )
-                return
-            chunks.append(body)
-            if not message.get("more_body", False):
-                break
-
-        buffered_body = b"".join(chunks)
-        sent = False
-
-        async def replay_receive():
-            nonlocal sent
-            if sent:
-                return {"type": "http.request", "body": b"", "more_body": False}
-            sent = True
-            return {"type": "http.request", "body": buffered_body, "more_body": False}
-
-        await self.app(scope, replay_receive, send)
+        return await call_next(request)
 
 
 class SimpleRateLimitMiddleware(BaseHTTPMiddleware):
