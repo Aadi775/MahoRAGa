@@ -596,3 +596,127 @@ def graph_summary(
             conn.close()
         except Exception:
             pass
+
+
+@app.get("/v1/provenance/options")
+def provenance_options() -> dict[str, Any]:
+    conn = _get_read_connection()
+    try:
+        try:
+            agents = _fetch_rows(
+                conn,
+                "MATCH (a:Agent) RETURN a.id AS id, a.name AS name ORDER BY a.name",
+            )
+            models = _fetch_rows(
+                conn,
+                "MATCH (m:Model) RETURN m.id AS id, m.name AS name, m.provider AS provider ORDER BY m.name",
+            )
+            operations = _fetch_rows(
+                conn,
+                "MATCH (e:ActionEvent) RETURN DISTINCT e.operation AS operation ORDER BY e.operation",
+            )
+        except Exception:
+            agents, models, operations = [], [], []
+        return {
+            "agents": agents,
+            "models": models,
+            "operations": [row.get("operation") for row in operations if row.get("operation")],
+        }
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/v1/provenance/timeline")
+def provenance_timeline(
+    project_id: str | None = Query(default=None),
+    agent_id: str | None = Query(default=None),
+    model_id: str | None = Query(default=None),
+    operation: str | None = Query(default=None),
+    since: str | None = Query(default=None),
+    until: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=2000),
+) -> dict[str, Any]:
+    conn = _get_read_connection()
+    try:
+        try:
+            rows = _fetch_rows(
+                conn,
+                "MATCH (e:ActionEvent) RETURN e.* ORDER BY e.timestamp DESC LIMIT $limit",
+                {"limit": limit},
+            )
+        except Exception:
+            rows = []
+        filtered = rows
+        if project_id:
+            filtered = [r for r in filtered if r.get("project_id") == project_id]
+        if agent_id:
+            filtered = [r for r in filtered if r.get("agent_id") == agent_id]
+        if model_id:
+            filtered = [r for r in filtered if r.get("model_id") == model_id]
+        if operation:
+            filtered = [r for r in filtered if r.get("operation") == operation]
+        if since:
+            filtered = [r for r in filtered if str(r.get("timestamp", "")) >= since]
+        if until:
+            filtered = [r for r in filtered if str(r.get("timestamp", "")) <= until]
+
+        for row in filtered:
+            row["metadata"] = _safe_parse_json(row.get("metadata_json"))
+            row.pop("metadata_json", None)
+
+        return {"events": filtered, "count": len(filtered)}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/v1/provenance/entity")
+def provenance_entity(
+    target_type: str = Query(...),
+    target_id: str = Query(...),
+    agent_id: str | None = Query(default=None),
+    model_id: str | None = Query(default=None),
+    operation: str | None = Query(default=None),
+    since: str | None = Query(default=None),
+    until: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> dict[str, Any]:
+    conn = _get_read_connection()
+    try:
+        try:
+            rows = _fetch_rows(
+                conn,
+                """
+                MATCH (e:ActionEvent {target_type: $target_type, target_id: $target_id})
+                RETURN e.* ORDER BY e.timestamp DESC LIMIT $limit
+                """,
+                {"target_type": target_type, "target_id": target_id, "limit": limit},
+            )
+        except Exception:
+            rows = []
+        filtered = rows
+        if agent_id:
+            filtered = [r for r in filtered if r.get("agent_id") == agent_id]
+        if model_id:
+            filtered = [r for r in filtered if r.get("model_id") == model_id]
+        if operation:
+            filtered = [r for r in filtered if r.get("operation") == operation]
+        if since:
+            filtered = [r for r in filtered if str(r.get("timestamp", "")) >= since]
+        if until:
+            filtered = [r for r in filtered if str(r.get("timestamp", "")) <= until]
+
+        for row in filtered:
+            row["metadata"] = _safe_parse_json(row.get("metadata_json"))
+            row.pop("metadata_json", None)
+        return {"events": filtered, "count": len(filtered)}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

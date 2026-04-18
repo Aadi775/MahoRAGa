@@ -1,4 +1,4 @@
-# MahoRaga Viewer (Frontend)
+# MahoRAGa Viewer (Frontend)
 
 This is the browser UI for exploring your MahoRAGa knowledge graph.
 

@@ -137,6 +137,35 @@ def _validate_artifact_content_size(content: str) -> Optional[str]:
     return None
 
 
+def _ensure_actor_context(actor_context: Optional[dict]) -> Optional[str]:
+    return db.validate_provenance_context(actor_context)
+
+
+def _safe_log_action_event(
+    conn,
+    actor_context: Optional[dict],
+    operation: str,
+    target_type: str,
+    target_id: str,
+    project_id: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> Optional[str]:
+    try:
+        if actor_context is None:
+            return None
+        return db.log_action_event(
+            conn,
+            actor_context=actor_context,
+            operation=operation,
+            target_type=target_type,
+            target_id=target_id,
+            project_id=project_id,
+            metadata=metadata,
+        )
+    except Exception:
+        return None
+
+
 def _vectorized_cosine_scores(
     query_embedding: list[float], items: list[dict], embedding_key: str = "embedding"
 ) -> list[float]:
@@ -176,8 +205,40 @@ def _vectorized_cosine_scores(
 
 def register_tools(mcp: FastMCP) -> None:
 
+    def _validated_ctx(actor_context: Optional[dict]) -> tuple[dict, Optional[dict]]:
+        ctx_err = _ensure_actor_context(actor_context)
+        if ctx_err:
+            return {}, {"error": ctx_err}
+        return actor_context or {}, None
+
+    def _log_event(
+        conn,
+        actor_context: Optional[dict],
+        operation: str,
+        target_type: str,
+        target_id: str,
+        project_id: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        if actor_context is None:
+            raise ValueError("actor_context is required")
+        db.log_action_event(
+            conn,
+            actor_context=actor_context,
+            operation=operation,
+            target_type=target_type,
+            target_id=target_id,
+            project_id=project_id,
+            metadata=metadata,
+        )
+
     @mcp.tool
-    def add_project(name: str, path: str, description: str = "") -> dict:
+    def add_project(
+        name: str,
+        path: str,
+        description: str = "",
+        actor_context: Optional[dict] = None,
+    ) -> dict:
         """Create a new project node in the knowledge graph.
 
         Args:
@@ -189,6 +250,9 @@ def register_tools(mcp: FastMCP) -> None:
             dict with project_id on success, or error dict on failure
         """
         try:
+            ctx_err = _ensure_actor_context(actor_context)
+            if ctx_err:
+                return {"error": ctx_err}
             if _is_blank(name):
                 return {"error": "Project name cannot be empty"}
             if _is_blank(path):
@@ -202,6 +266,15 @@ def register_tools(mcp: FastMCP) -> None:
                     "project_id": existing["id"],
                 }
             project_id = db.add_project(conn, name, path, description)
+            db.log_action_event(
+                conn,
+                actor_context=actor_context or {},
+                operation="add_project",
+                target_type="Project",
+                target_id=project_id,
+                project_id=project_id,
+                metadata={"name": name, "path": path},
+            )
             return {"project_id": project_id, "name": name, "path": path}
         except Exception as e:
             return {"error": str(e)}
@@ -212,6 +285,7 @@ def register_tools(mcp: FastMCP) -> None:
         summary: str,
         files_touched: list[str],
         project_path: Optional[str] = None,
+        actor_context: Optional[dict] = None,
     ) -> dict:
         """Create a new session linked to a project.
 
@@ -228,6 +302,9 @@ def register_tools(mcp: FastMCP) -> None:
             dict with session_id on success, or error dict on failure
         """
         try:
+            ctx_err = _ensure_actor_context(actor_context)
+            if ctx_err:
+                return {"error": ctx_err}
             if _is_blank(project_name):
                 return {"error": "project_name cannot be empty"}
             if _is_blank(summary):
@@ -248,12 +325,25 @@ def register_tools(mcp: FastMCP) -> None:
                 project_id = project["id"]
 
             session_id = db.add_session(conn, project_id, summary, files_touched)
+            db.log_action_event(
+                conn,
+                actor_context=actor_context or {},
+                operation="add_session",
+                target_type="Session",
+                target_id=session_id,
+                project_id=project_id,
+                metadata={"project_name": project_name},
+            )
             return {"session_id": session_id, "project_id": project_id}
         except Exception as e:
             return {"error": str(e)}
 
     @mcp.tool
-    def close_session(session_id: str, ended_at: Optional[str] = None) -> dict:
+    def close_session(
+        session_id: str,
+        ended_at: Optional[str] = None,
+        actor_context: Optional[dict] = None,
+    ) -> dict:
         """Close a session and update its end timestamp.
 
         Also creates or updates the DailyActivity node for the session's date.
@@ -266,6 +356,9 @@ def register_tools(mcp: FastMCP) -> None:
             dict with success status or error dict on failure
         """
         try:
+            ctx_err = _ensure_actor_context(actor_context)
+            if ctx_err:
+                return {"error": ctx_err}
             conn = db.get_connection()
             session = db.get_session_by_id(conn, session_id)
             if not session:
@@ -273,12 +366,27 @@ def register_tools(mcp: FastMCP) -> None:
 
             result = db.close_session(conn, session_id, ended_at)
             db.link_session_to_daily_activity(conn, session_id)
+            db.log_action_event(
+                conn,
+                actor_context=actor_context or {},
+                operation="close_session",
+                target_type="Session",
+                target_id=session_id,
+                project_id=session.get("project_id"),
+                metadata={"ended_at": result.get("ended_at")},
+            )
             return result
         except Exception as e:
             return {"error": str(e)}
 
     @mcp.tool
-    def log_error(session_id: str, message: str, context: str, file: str) -> dict:
+    def log_error(
+        session_id: str,
+        message: str,
+        context: str,
+        file: str,
+        actor_context: Optional[dict] = None,
+    ) -> dict:
         """Log an error that occurred during a session.
 
         Creates an Error node with embedded message for semantic search.
@@ -293,6 +401,9 @@ def register_tools(mcp: FastMCP) -> None:
             dict with error_id on success, or error dict on failure
         """
         try:
+            ctx_err = _ensure_actor_context(actor_context)
+            if ctx_err:
+                return {"error": ctx_err}
             if _is_blank(message):
                 return {"error": "message cannot be empty"}
             if _is_blank(file):
@@ -313,12 +424,26 @@ def register_tools(mcp: FastMCP) -> None:
                 file,
                 message_embedding,
             )
+            db.log_action_event(
+                conn,
+                actor_context=actor_context or {},
+                operation="log_error",
+                target_type="Error",
+                target_id=error_id,
+                project_id=session.get("project_id"),
+                metadata={"session_id": session_id, "file": file},
+            )
             return {"error_id": error_id}
         except Exception as e:
             return {"error": str(e)}
 
     @mcp.tool
-    def log_solution(error_id: str, description: str, code_snippet: str = "") -> dict:
+    def log_solution(
+        error_id: str,
+        description: str,
+        code_snippet: str = "",
+        actor_context: Optional[dict] = None,
+    ) -> dict:
         """Log a solution for a previously logged error.
 
         Args:
@@ -330,17 +455,38 @@ def register_tools(mcp: FastMCP) -> None:
             dict with solution_id on success, or error dict on failure
         """
         try:
+            ctx_err = _ensure_actor_context(actor_context)
+            if ctx_err:
+                return {"error": ctx_err}
             if _is_blank(description):
                 return {"error": "description cannot be empty"}
 
             conn = db.get_connection()
             solution_id = db.add_solution(conn, error_id, description, code_snippet)
+            error_rows = db._result_to_dicts(
+                conn.execute("MATCH (e:Error {id: $id}) RETURN e.project_id", {"id": error_id})
+            )
+            project_id = error_rows[0].get("project_id") if error_rows else None
+            db.log_action_event(
+                conn,
+                actor_context=actor_context or {},
+                operation="log_solution",
+                target_type="Solution",
+                target_id=solution_id,
+                project_id=project_id,
+                metadata={"error_id": error_id},
+            )
             return {"solution_id": solution_id}
         except Exception as e:
             return {"error": str(e)}
 
     @mcp.tool
-    def add_concept(title: str, content: str, tags: Optional[list[str]] = None) -> dict:
+    def add_concept(
+        title: str,
+        content: str,
+        tags: Optional[list[str]] = None,
+        actor_context: Optional[dict] = None,
+    ) -> dict:
         """Add a new concept to the knowledge graph.
 
         Concepts are semantic knowledge entries that can be linked to sessions.
@@ -354,6 +500,9 @@ def register_tools(mcp: FastMCP) -> None:
             dict with concept_id on success, or error dict on failure
         """
         try:
+            ctx_err = _ensure_actor_context(actor_context)
+            if ctx_err:
+                return {"error": ctx_err}
             if _is_blank(title):
                 return {"error": "title cannot be empty"}
             if _is_blank(content):
@@ -363,12 +512,24 @@ def register_tools(mcp: FastMCP) -> None:
             concept_tags = tags or []
             embedding = embeddings.embed(f"{title}: {content}")
             concept_id = db.add_concept(conn, title, content, concept_tags, embedding)
+            db.log_action_event(
+                conn,
+                actor_context=actor_context or {},
+                operation="add_concept",
+                target_type="Concept",
+                target_id=concept_id,
+                metadata={"title": title, "tags": concept_tags},
+            )
             return {"concept_id": concept_id}
         except Exception as e:
             return {"error": str(e)}
 
     @mcp.tool
-    def link_concept_to_session(concept_id: str, session_id: str) -> dict:
+    def link_concept_to_session(
+        concept_id: str,
+        session_id: str,
+        actor_context: Optional[dict] = None,
+    ) -> dict:
         """Link a concept to a session.
 
         Creates a REFERENCES relationship from session to concept.
@@ -381,8 +542,23 @@ def register_tools(mcp: FastMCP) -> None:
             dict with success status or error dict on failure
         """
         try:
+            ctx_err = _ensure_actor_context(actor_context)
+            if ctx_err:
+                return {"error": ctx_err}
             conn = db.get_connection()
-            return db.link_concept_to_session(conn, concept_id, session_id)
+            result = db.link_concept_to_session(conn, concept_id, session_id)
+            if "error" not in result:
+                session = db.get_session_by_id(conn, session_id)
+                db.log_action_event(
+                    conn,
+                    actor_context=actor_context or {},
+                    operation="link_concept_to_session",
+                    target_type="Concept",
+                    target_id=concept_id,
+                    project_id=session.get("project_id") if session else None,
+                    metadata={"session_id": session_id},
+                )
+            return result
         except Exception as e:
             return {"error": str(e)}
 
@@ -683,7 +859,12 @@ def register_tools(mcp: FastMCP) -> None:
             return {"error": str(e), "errors": [], "solutions": []}
 
     @mcp.tool
-    def update_concept(concept_id: str, new_content: str, new_title: Optional[str] = None) -> dict:
+    def update_concept(
+        concept_id: str,
+        new_content: str,
+        new_title: Optional[str] = None,
+        actor_context: Optional[dict] = None,
+    ) -> dict:
         """Update a concept's content (re-embeds automatically).
 
         Args:
@@ -695,6 +876,9 @@ def register_tools(mcp: FastMCP) -> None:
             dict with success status or error dict on failure
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             if _is_blank(new_content):
                 return {"error": "new_content cannot be empty"}
             if new_title is not None and _is_blank(new_title):
@@ -707,12 +891,22 @@ def register_tools(mcp: FastMCP) -> None:
 
             title = new_title or concept.get("title", "")
             new_embedding = embeddings.embed(f"{title}: {new_content}")
-            return db.update_concept(conn, concept_id, new_content, new_embedding, new_title)
+            result = db.update_concept(conn, concept_id, new_content, new_embedding, new_title)
+            if "error" not in result:
+                _log_event(
+                    conn,
+                    actor_context,
+                    "update_concept",
+                    "Concept",
+                    concept_id,
+                    metadata={"new_title": new_title},
+                )
+            return result
         except Exception as e:
             return {"error": str(e)}
 
     @mcp.tool
-    def delete_concept(concept_id: str) -> dict:
+    def delete_concept(concept_id: str, actor_context: Optional[dict] = None) -> dict:
         """Delete a concept from the knowledge graph.
 
         Also removes any REFERENCES relationships to sessions.
@@ -724,8 +918,14 @@ def register_tools(mcp: FastMCP) -> None:
             dict with success status
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             conn = db.get_connection()
-            return db.delete_concept(conn, concept_id)
+            result = db.delete_concept(conn, concept_id)
+            if "error" not in result:
+                _log_event(conn, actor_context, "delete_concept", "Concept", concept_id)
+            return result
         except Exception as e:
             return {"error": str(e)}
 
@@ -767,6 +967,7 @@ def register_tools(mcp: FastMCP) -> None:
         path: Optional[str] = None,
         description: Optional[str] = None,
         merge_project_id: Optional[str] = None,
+        actor_context: Optional[dict] = None,
     ) -> dict:
         """Update a project's metadata or merge with another project.
 
@@ -781,6 +982,9 @@ def register_tools(mcp: FastMCP) -> None:
             dict with success status or error dict on failure
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             if merge_project_id and project_id == merge_project_id:
                 return {"error": "Cannot merge a project into itself"}
             if name is not None and _is_blank(name):
@@ -789,12 +993,23 @@ def register_tools(mcp: FastMCP) -> None:
                 return {"error": "path cannot be empty"}
 
             conn = db.get_connection()
-            return db.update_project(conn, project_id, name, path, description, merge_project_id)
+            result = db.update_project(conn, project_id, name, path, description, merge_project_id)
+            if "error" not in result:
+                _log_event(
+                    conn,
+                    actor_context,
+                    "update_project",
+                    "Project",
+                    project_id,
+                    project_id=project_id,
+                    metadata={"merge_project_id": merge_project_id},
+                )
+            return result
         except Exception as e:
             return {"error": str(e)}
 
     @mcp.tool
-    def delete_old_sessions(days_to_keep: int = 30) -> dict:
+    def delete_old_sessions(days_to_keep: int = 30, actor_context: Optional[dict] = None) -> dict:
         """Delete old sessions and their errors/solutions (keeps concepts).
 
         Smart cleanup that preserves learned concepts while removing old session data.
@@ -806,6 +1021,9 @@ def register_tools(mcp: FastMCP) -> None:
             dict with deletion statistics
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             if isinstance(days_to_keep, bool):
                 return {"error": "days_to_keep must be an integer"}
             try:
@@ -814,7 +1032,17 @@ def register_tools(mcp: FastMCP) -> None:
                 return {"error": "days_to_keep must be an integer"}
             days_to_keep = max(1, min(parsed_days, 3650))
             conn = db.get_connection()
-            return db.delete_old_sessions(conn, days_to_keep)
+            result = db.delete_old_sessions(conn, days_to_keep)
+            if "error" not in result:
+                _log_event(
+                    conn,
+                    actor_context,
+                    "delete_old_sessions",
+                    "Session",
+                    "bulk",
+                    metadata={"days_to_keep": days_to_keep},
+                )
+            return result
         except Exception as e:
             return {"error": str(e)}
 
@@ -928,7 +1156,11 @@ def register_tools(mcp: FastMCP) -> None:
             return {"error": str(e)}
 
     @mcp.tool
-    def update_session_summary(session_id: str, summary: str) -> dict:
+    def update_session_summary(
+        session_id: str,
+        summary: str,
+        actor_context: Optional[dict] = None,
+    ) -> dict:
         """Update a session's summary.
 
         Args:
@@ -939,15 +1171,33 @@ def register_tools(mcp: FastMCP) -> None:
             dict with success status
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             if _is_blank(summary):
                 return {"error": "summary cannot be empty"}
             conn = db.get_connection()
-            return db.update_session_summary(conn, session_id, summary)
+            result = db.update_session_summary(conn, session_id, summary)
+            if "error" not in result:
+                session = db.get_session_by_id(conn, session_id)
+                _log_event(
+                    conn,
+                    actor_context,
+                    "update_session_summary",
+                    "Session",
+                    session_id,
+                    project_id=session.get("project_id") if session else None,
+                )
+            return result
         except Exception as e:
             return {"error": str(e)}
 
     @mcp.tool
-    def add_tag_to_concept(concept_id: str, tag: str) -> dict:
+    def add_tag_to_concept(
+        concept_id: str,
+        tag: str,
+        actor_context: Optional[dict] = None,
+    ) -> dict:
         """Add a tag to a concept without re-embedding.
 
         Args:
@@ -958,13 +1208,23 @@ def register_tools(mcp: FastMCP) -> None:
             dict with updated tags
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             conn = db.get_connection()
-            return db.add_tag_to_concept(conn, concept_id, tag)
+            result = db.add_tag_to_concept(conn, concept_id, tag)
+            if "error" not in result:
+                _log_event(conn, actor_context, "add_tag_to_concept", "Concept", concept_id)
+            return result
         except Exception as e:
             return {"error": str(e)}
 
     @mcp.tool
-    def remove_tag_from_concept(concept_id: str, tag: str) -> dict:
+    def remove_tag_from_concept(
+        concept_id: str,
+        tag: str,
+        actor_context: Optional[dict] = None,
+    ) -> dict:
         """Remove a tag from a concept without re-embedding.
 
         Args:
@@ -975,13 +1235,19 @@ def register_tools(mcp: FastMCP) -> None:
             dict with updated tags
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             conn = db.get_connection()
-            return db.remove_tag_from_concept(conn, concept_id, tag)
+            result = db.remove_tag_from_concept(conn, concept_id, tag)
+            if "error" not in result:
+                _log_event(conn, actor_context, "remove_tag_from_concept", "Concept", concept_id)
+            return result
         except Exception as e:
             return {"error": str(e)}
 
     @mcp.tool
-    def delete_project(project_id: str) -> dict:
+    def delete_project(project_id: str, actor_context: Optional[dict] = None) -> dict:
         """Delete a project and all its sessions, errors, and solutions.
 
         Warning: This is a cascade delete and cannot be undone.
@@ -993,13 +1259,26 @@ def register_tools(mcp: FastMCP) -> None:
             dict with deletion statistics
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             conn = db.get_connection()
-            return db.delete_project_cascade(conn, project_id)
+            result = db.delete_project_cascade(conn, project_id)
+            if "error" not in result:
+                _log_event(
+                    conn,
+                    actor_context,
+                    "delete_project",
+                    "Project",
+                    project_id,
+                    project_id=project_id,
+                )
+            return result
         except Exception as e:
             return {"error": str(e)}
 
     @mcp.tool
-    def batch_add_concepts(concepts: list[dict]) -> dict:
+    def batch_add_concepts(concepts: list[dict], actor_context: Optional[dict] = None) -> dict:
         """Add multiple concepts at once.
 
         Each concept dict should have: title, content, and optionally tags.
@@ -1011,6 +1290,9 @@ def register_tools(mcp: FastMCP) -> None:
             dict with list of created concept IDs
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             if not concepts:
                 return {"error": "concepts list cannot be empty"}
             for i, c in enumerate(concepts):
@@ -1020,12 +1302,26 @@ def register_tools(mcp: FastMCP) -> None:
                     return {"error": f"Concept at index {i} has empty content"}
 
             conn = db.get_connection()
-            return db.batch_add_concepts(conn, concepts, embeddings.embed_batch)
+            result = db.batch_add_concepts(conn, concepts, embeddings.embed_batch)
+            if "error" not in result:
+                for concept_id in result.get("concept_ids", []):
+                    _safe_log_action_event(
+                        conn,
+                        actor_context,
+                        "batch_add_concept",
+                        "Concept",
+                        concept_id,
+                    )
+            return result
         except Exception as e:
             return {"error": str(e)}
 
     @mcp.tool
-    def batch_link_concepts(concept_ids: list[str], session_id: str) -> dict:
+    def batch_link_concepts(
+        concept_ids: list[str],
+        session_id: str,
+        actor_context: Optional[dict] = None,
+    ) -> dict:
         """Link multiple concepts to a session at once.
 
         Args:
@@ -1036,8 +1332,24 @@ def register_tools(mcp: FastMCP) -> None:
             dict with linked and failed lists
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             conn = db.get_connection()
-            return db.batch_link_concepts_to_session(conn, concept_ids, session_id)
+            result = db.batch_link_concepts_to_session(conn, concept_ids, session_id)
+            if "error" not in result:
+                session = db.get_session_by_id(conn, session_id)
+                for cid in result.get("linked", []):
+                    _safe_log_action_event(
+                        conn,
+                        actor_context,
+                        "batch_link_concept",
+                        "Concept",
+                        cid,
+                        project_id=session.get("project_id") if session else None,
+                        metadata={"session_id": session_id},
+                    )
+            return result
         except Exception as e:
             return {"error": str(e)}
 
@@ -1125,7 +1437,11 @@ def register_tools(mcp: FastMCP) -> None:
             return {"error": str(e), "concepts": []}
 
     @mcp.tool
-    def unlink_concept_from_session(concept_id: str, session_id: str) -> dict:
+    def unlink_concept_from_session(
+        concept_id: str,
+        session_id: str,
+        actor_context: Optional[dict] = None,
+    ) -> dict:
         """Remove a concept reference from a session.
 
         Args:
@@ -1136,8 +1452,23 @@ def register_tools(mcp: FastMCP) -> None:
             dict with success status
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             conn = db.get_connection()
-            return db.unlink_concept_from_session(conn, concept_id, session_id)
+            result = db.unlink_concept_from_session(conn, concept_id, session_id)
+            if "error" not in result:
+                session = db.get_session_by_id(conn, session_id)
+                _log_event(
+                    conn,
+                    actor_context,
+                    "unlink_concept_from_session",
+                    "Concept",
+                    concept_id,
+                    project_id=session.get("project_id") if session else None,
+                    metadata={"session_id": session_id},
+                )
+            return result
         except Exception as e:
             return {"error": str(e)}
 
@@ -1210,7 +1541,82 @@ def register_tools(mcp: FastMCP) -> None:
             return {"error": str(e), "errors": []}
 
     @mcp.tool
-    def delete_session(session_id: str) -> dict:
+    def get_agent_activity(
+        agent_id: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> dict:
+        """Get action events performed by a specific agent.
+
+        Args:
+            agent_id: Agent ID
+            start_date: Optional ISO/date lower bound
+            end_date: Optional ISO/date upper bound
+
+        Returns:
+            dict with agent metadata and matching events
+        """
+        try:
+            conn = db.get_connection()
+            return db.get_agent_activity(conn, agent_id, start_date, end_date)
+        except Exception as e:
+            return {"error": str(e), "events": []}
+
+    @mcp.tool
+    def get_model_activity(
+        model_id: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> dict:
+        """Get action events produced by a specific model."""
+        try:
+            conn = db.get_connection()
+            return db.get_model_activity(conn, model_id, start_date, end_date)
+        except Exception as e:
+            return {"error": str(e), "events": []}
+
+    @mcp.tool
+    def get_action_timeline(
+        project_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        model_id: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict:
+        """Get filtered provenance timeline events."""
+        try:
+            conn = db.get_connection()
+            return db.get_action_timeline(
+                conn,
+                project_id=project_id,
+                agent_id=agent_id,
+                model_id=model_id,
+                since=since,
+                until=until,
+                limit=_clamp_limit(limit, default=100, maximum=1000),
+                offset=offset,
+            )
+        except Exception as e:
+            return {"error": str(e), "events": []}
+
+    @mcp.tool
+    def get_entity_provenance(target_type: str, target_id: str, limit: int = 100) -> dict:
+        """Get action history for a specific entity."""
+        try:
+            conn = db.get_connection()
+            return db.get_entity_provenance(
+                conn,
+                target_type=target_type,
+                target_id=target_id,
+                limit=_clamp_limit(limit, default=100, maximum=1000),
+            )
+        except Exception as e:
+            return {"error": str(e), "events": []}
+
+    @mcp.tool
+    def delete_session(session_id: str, actor_context: Optional[dict] = None) -> dict:
         """Delete a session and all its errors and solutions.
 
         Warning: This is a cascade delete and cannot be undone.
@@ -1222,8 +1628,22 @@ def register_tools(mcp: FastMCP) -> None:
             dict with deletion statistics
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             conn = db.get_connection()
-            return db.delete_session_cascade(conn, session_id)
+            session = db.get_session_by_id(conn, session_id)
+            result = db.delete_session_cascade(conn, session_id)
+            if "error" not in result:
+                _log_event(
+                    conn,
+                    actor_context,
+                    "delete_session",
+                    "Session",
+                    session_id,
+                    project_id=session.get("project_id") if session else None,
+                )
+            return result
         except Exception as e:
             return {"error": str(e)}
 
@@ -1269,7 +1689,11 @@ def register_tools(mcp: FastMCP) -> None:
             return {"error": str(e)}
 
     @mcp.tool
-    def update_daily_activity(activity_id: str, summary: str) -> dict:
+    def update_daily_activity(
+        activity_id: str,
+        summary: str,
+        actor_context: Optional[dict] = None,
+    ) -> dict:
         """Update a daily activity's summary.
 
         Args:
@@ -1280,10 +1704,22 @@ def register_tools(mcp: FastMCP) -> None:
             dict with success status
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             if _is_blank(summary):
                 return {"error": "summary cannot be empty"}
             conn = db.get_connection()
-            return db.update_daily_activity_summary(conn, activity_id, summary)
+            result = db.update_daily_activity_summary(conn, activity_id, summary)
+            if "error" not in result:
+                _log_event(
+                    conn,
+                    actor_context,
+                    "update_daily_activity",
+                    "DailyActivity",
+                    activity_id,
+                )
+            return result
         except Exception as e:
             return {"error": str(e)}
 
@@ -1298,6 +1734,7 @@ def register_tools(mcp: FastMCP) -> None:
         created_by: str = "agent",
         tags: Optional[list[str]] = None,
         file_path: Optional[str] = None,
+        actor_context: Optional[dict] = None,
     ) -> dict:
         """Create a new artifact in the knowledge graph.
 
@@ -1316,6 +1753,9 @@ def register_tools(mcp: FastMCP) -> None:
             dict with artifact_id on success, or error dict on failure
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             if _is_blank(title):
                 return {"error": "title cannot be empty"}
             if _is_blank(content):
@@ -1343,6 +1783,14 @@ def register_tools(mcp: FastMCP) -> None:
                 created_by,
                 tags,
                 file_path,
+            )
+            _log_event(
+                conn,
+                actor_context,
+                "add_artifact",
+                "Artifact",
+                artifact_id,
+                metadata={"artifact_type": artifact_type, "title": title},
             )
             return {"artifact_id": artifact_id}
         except Exception as e:
@@ -1408,6 +1856,7 @@ def register_tools(mcp: FastMCP) -> None:
         content: Optional[str] = None,
         tags: Optional[list[str]] = None,
         file_path: Optional[str] = None,
+        actor_context: Optional[dict] = None,
     ) -> dict:
         """Update an artifact's metadata or content (re-embeds automatically).
 
@@ -1423,6 +1872,9 @@ def register_tools(mcp: FastMCP) -> None:
             dict with success status
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             if title is not None and _is_blank(title):
                 return {"error": "title cannot be empty"}
             if content is not None and _is_blank(content):
@@ -1444,7 +1896,7 @@ def register_tools(mcp: FastMCP) -> None:
                 c = content or artifact.get("content", "")
                 new_embedding = embeddings.embed(f"{t}: {d} {c[:500]}")
 
-            return db.update_artifact(
+            result = db.update_artifact(
                 conn,
                 artifact_id,
                 title,
@@ -1454,11 +1906,20 @@ def register_tools(mcp: FastMCP) -> None:
                 tags,
                 file_path,
             )
+            if "error" not in result:
+                _log_event(
+                    conn,
+                    actor_context,
+                    "update_artifact",
+                    "Artifact",
+                    artifact_id,
+                )
+            return result
         except Exception as e:
             return {"error": str(e)}
 
     @mcp.tool
-    def delete_artifact(artifact_id: str) -> dict:
+    def delete_artifact(artifact_id: str, actor_context: Optional[dict] = None) -> dict:
         """Delete an artifact and all its relationships.
 
         Args:
@@ -1468,8 +1929,14 @@ def register_tools(mcp: FastMCP) -> None:
             dict with success status
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             conn = db.get_connection()
-            return db.delete_artifact(conn, artifact_id)
+            result = db.delete_artifact(conn, artifact_id)
+            if "error" not in result:
+                _log_event(conn, actor_context, "delete_artifact", "Artifact", artifact_id)
+            return result
         except Exception as e:
             return {"error": str(e)}
 
@@ -1478,6 +1945,7 @@ def register_tools(mcp: FastMCP) -> None:
         artifact_id: str,
         target_id: str,
         target_type: str,
+        actor_context: Optional[dict] = None,
     ) -> dict:
         """Link an artifact to a session, concept, or error.
 
@@ -1490,13 +1958,54 @@ def register_tools(mcp: FastMCP) -> None:
             dict with success status
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             conn = db.get_connection()
             if target_type == "session":
-                return db.link_artifact_to_session(conn, artifact_id, target_id)
+                result = db.link_artifact_to_session(conn, artifact_id, target_id)
+                if "error" not in result:
+                    session = db.get_session_by_id(conn, target_id)
+                    _log_event(
+                        conn,
+                        actor_context,
+                        "link_artifact",
+                        "Artifact",
+                        artifact_id,
+                        project_id=session.get("project_id") if session else None,
+                        metadata={"target_type": target_type, "target_id": target_id},
+                    )
+                return result
             elif target_type == "concept":
-                return db.link_artifact_to_concept(conn, artifact_id, target_id)
+                result = db.link_artifact_to_concept(conn, artifact_id, target_id)
+                if "error" not in result:
+                    _log_event(
+                        conn,
+                        actor_context,
+                        "link_artifact",
+                        "Artifact",
+                        artifact_id,
+                        metadata={"target_type": target_type, "target_id": target_id},
+                    )
+                return result
             elif target_type == "error":
-                return db.link_artifact_to_error(conn, artifact_id, target_id)
+                result = db.link_artifact_to_error(conn, artifact_id, target_id)
+                if "error" not in result:
+                    rows = db._result_to_dicts(
+                        conn.execute(
+                            "MATCH (e:Error {id: $id}) RETURN e.project_id", {"id": target_id}
+                        )
+                    )
+                    _log_event(
+                        conn,
+                        actor_context,
+                        "link_artifact",
+                        "Artifact",
+                        artifact_id,
+                        project_id=rows[0].get("project_id") if rows else None,
+                        metadata={"target_type": target_type, "target_id": target_id},
+                    )
+                return result
             else:
                 return {
                     "error": f"Invalid target_type '{target_type}'. Use 'session', 'concept', or 'error'."
@@ -1505,7 +2014,11 @@ def register_tools(mcp: FastMCP) -> None:
             return {"error": str(e)}
 
     @mcp.tool
-    def unlink_artifact_from_session(artifact_id: str, session_id: str) -> dict:
+    def unlink_artifact_from_session(
+        artifact_id: str,
+        session_id: str,
+        actor_context: Optional[dict] = None,
+    ) -> dict:
         """Remove an artifact link from a session.
 
         Args:
@@ -1516,8 +2029,23 @@ def register_tools(mcp: FastMCP) -> None:
             dict with success status
         """
         try:
+            actor_context, err = _validated_ctx(actor_context)
+            if err:
+                return err
             conn = db.get_connection()
-            return db.unlink_artifact_from_session(conn, artifact_id, session_id)
+            result = db.unlink_artifact_from_session(conn, artifact_id, session_id)
+            if "error" not in result:
+                session = db.get_session_by_id(conn, session_id)
+                _log_event(
+                    conn,
+                    actor_context,
+                    "unlink_artifact_from_session",
+                    "Artifact",
+                    artifact_id,
+                    project_id=session.get("project_id") if session else None,
+                    metadata={"session_id": session_id},
+                )
+            return result
         except Exception as e:
             return {"error": str(e)}
 

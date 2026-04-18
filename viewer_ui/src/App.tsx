@@ -27,6 +27,14 @@ interface Filters {
   max_links: number
 }
 
+interface ProvenanceFilters {
+  agent_id: string
+  model_id: string
+  operation: string
+  since: string
+  until: string
+}
+
 // Normalized response shape (UI works with this internally)
 interface GraphSummary {
   nodes: GraphNode[]
@@ -60,6 +68,33 @@ async function fetchGraphSummary(filters: Filters): Promise<RawGraphSummaryRespo
   const res = await fetch(`${API_BASE}/v1/graph/summary?${params}`)
   if (!res.ok) throw new Error(`API error: ${res.status}`)
   return (await res.json()) as RawGraphSummaryResponse
+}
+
+async function fetchProvenanceOptions(): Promise<ProvenanceOptions> {
+  const res = await fetch(`${API_BASE}/v1/provenance/options`)
+  if (!res.ok) throw new Error(`API error: ${res.status}`)
+  return res.json()
+}
+
+async function fetchEntityProvenance(
+  targetType: string,
+  targetId: string,
+  filters: ProvenanceFilters
+): Promise<{ events: ProvenanceEvent[] }> {
+  const params = new URLSearchParams({
+    target_type: targetType,
+    target_id: targetId,
+    limit: '200',
+  })
+  if (filters.agent_id) params.append('agent_id', filters.agent_id)
+  if (filters.model_id) params.append('model_id', filters.model_id)
+  if (filters.operation) params.append('operation', filters.operation)
+  if (filters.since) params.append('since', filters.since)
+  if (filters.until) params.append('until', filters.until)
+
+  const res = await fetch(`${API_BASE}/v1/provenance/entity?${params}`)
+  if (!res.ok) throw new Error(`API error: ${res.status}`)
+  return res.json()
 }
 
 // Node colors - matching backend entity_type values
@@ -103,6 +138,24 @@ interface RawNode {
 interface DetailItem {
   label: string
   value: string
+}
+
+interface ProvenanceEvent {
+  id: string
+  timestamp: string
+  operation: string
+  target_type: string
+  target_id: string
+  agent_id: string
+  model_id: string
+  status: string
+  metadata?: Record<string, unknown>
+}
+
+interface ProvenanceOptions {
+  agents: { id: string; name?: string }[]
+  models: { id: string; name?: string; provider?: string }[]
+  operations: string[]
 }
 
 interface CameraState {
@@ -269,6 +322,19 @@ export default function App() {
     max_links: 200,
   })
   const [searchTerm, setSearchTerm] = useState('')
+  const [provenanceFilters, setProvenanceFilters] = useState<ProvenanceFilters>({
+    agent_id: '',
+    model_id: '',
+    operation: '',
+    since: '',
+    until: '',
+  })
+  const [provenanceOptions, setProvenanceOptions] = useState<ProvenanceOptions>({
+    agents: [],
+    models: [],
+    operations: [],
+  })
+  const [selectedNodeEvents, setSelectedNodeEvents] = useState<ProvenanceEvent[]>([])
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null)
   const [introComplete, setIntroComplete] = useState(false)
   const [panelOpen, setPanelOpen] = useState(false)
@@ -364,6 +430,22 @@ export default function App() {
 
     return matches
   }, [graphData, searchTerm])
+
+  useEffect(() => {
+    fetchProvenanceOptions()
+      .then((data) => setProvenanceOptions(data))
+      .catch(() => setProvenanceOptions({ agents: [], models: [], operations: [] }))
+  }, [])
+
+  useEffect(() => {
+    if (!selectedNode) {
+      setSelectedNodeEvents([])
+      return
+    }
+    fetchEntityProvenance(selectedNode.entity_type, selectedNode.entity_id, provenanceFilters)
+      .then((data) => setSelectedNodeEvents(data.events || []))
+      .catch(() => setSelectedNodeEvents([]))
+  }, [selectedNode, provenanceFilters])
 
   // Force simulation
   const runSimulation = useCallback(() => {
@@ -678,7 +760,7 @@ export default function App() {
       {/* Header */}
       <header className="header">
         <div className="header-left">
-          <h1 className="title">Knowledge Graph</h1>
+          <h1 className="title">MahoRAGa</h1>
           <span className="subtitle">Viewer</span>
         </div>
 
@@ -690,6 +772,79 @@ export default function App() {
               value={searchTerm}
               placeholder="Label, concept text, tags..."
               onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+
+          <div className="filter-group">
+            <label>Agent</label>
+            <select
+              value={provenanceFilters.agent_id}
+              onChange={(e) =>
+                setProvenanceFilters((prev) => ({ ...prev, agent_id: e.target.value }))
+              }
+            >
+              <option value="">All Agents</option>
+              {provenanceOptions.agents.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name || agent.id}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="filter-group">
+            <label>Model</label>
+            <select
+              value={provenanceFilters.model_id}
+              onChange={(e) =>
+                setProvenanceFilters((prev) => ({ ...prev, model_id: e.target.value }))
+              }
+            >
+              <option value="">All Models</option>
+              {provenanceOptions.models.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.name || model.id}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="filter-group">
+            <label>Action</label>
+            <select
+              value={provenanceFilters.operation}
+              onChange={(e) =>
+                setProvenanceFilters((prev) => ({ ...prev, operation: e.target.value }))
+              }
+            >
+              <option value="">All Actions</option>
+              {provenanceOptions.operations.map((operation) => (
+                <option key={operation} value={operation}>
+                  {operation}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="filter-group date-group">
+            <label>Since</label>
+            <input
+              type="date"
+              value={provenanceFilters.since}
+              onChange={(e) =>
+                setProvenanceFilters((prev) => ({ ...prev, since: e.target.value }))
+              }
+            />
+          </div>
+
+          <div className="filter-group date-group">
+            <label>Until</label>
+            <input
+              type="date"
+              value={provenanceFilters.until}
+              onChange={(e) =>
+                setProvenanceFilters((prev) => ({ ...prev, until: e.target.value }))
+              }
             />
           </div>
 
@@ -849,6 +1004,29 @@ export default function App() {
                   <pre>{JSON.stringify(selectedNode.metadata, null, 2)}</pre>
                 </details>
               )}
+
+              <div className="provenance-block">
+                <span className="label">Provenance Timeline</span>
+                {selectedNodeEvents.length === 0 ? (
+                  <div className="detail-empty">No provenance events match current filters.</div>
+                ) : (
+                  <div className="event-list">
+                    {selectedNodeEvents.map((event) => (
+                      <div className="event-item" key={event.id}>
+                        <div className="event-top">
+                          <span className="event-operation">{event.operation}</span>
+                          <span className="event-time">{event.timestamp}</span>
+                        </div>
+                        <div className="event-meta">
+                          <span>agent: {event.agent_id}</span>
+                          <span>model: {event.model_id}</span>
+                          <span>status: {event.status}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </aside>
         )}

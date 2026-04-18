@@ -55,6 +55,39 @@ Open:
 
 ---
 
+## Strict multi-agent provenance
+
+Writes now support strict provenance tracking so you can audit **which agent + model** performed each mutation and when.
+
+### Required actor context on mutating tools
+
+Mutating tools require `actor_context` with:
+
+- `agent_id`
+- `agent_name`
+- `model_id`
+- `model_name`
+- `provider`
+
+`agent_id` and `agent_name` must match exactly and must be one of the configured OpenCode agent names from:
+
+`~/.config/opencode/agents/*.md`
+
+Example valid agent names include: `build`, `planner`, `frontend-specialist`, `security-reviewer`, etc.
+
+If you want to override the allowed list (for CI/tests), set:
+
+`MAHORAGA_ALLOWED_AGENTS=build,planner,frontend-specialist`
+
+### Provenance query tools
+
+- `get_agent_activity`
+- `get_model_activity`
+- `get_action_timeline`
+- `get_entity_provenance`
+
+---
+
 ## Features
 
 | Category            | Highlights                                                                                    |

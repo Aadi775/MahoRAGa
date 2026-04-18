@@ -9,6 +9,9 @@ This service is intentionally separate from the MCP server. It reads graph data 
 - `GET /health`
 - `GET /v1/graph/refresh-snapshot`
 - `GET /v1/graph/summary?project_id=&max_nodes=&max_links=`
+- `GET /v1/provenance/options`
+- `GET /v1/provenance/timeline?...`
+- `GET /v1/provenance/entity?target_type=&target_id=`
 
 `summary` returns:
 
@@ -23,6 +26,8 @@ This service is intentionally separate from the MCP server. It reads graph data 
 Kùzu uses file locking. Since your MCP server may hold the live DB lock, the viewer API reads from a refreshed local snapshot copy before serving data.
 
 This keeps viewer reads stable without fighting the MCP process lock.
+
+If provenance tables do not exist yet, provenance endpoints return empty lists instead of failing.
 
 ## Run locally
 

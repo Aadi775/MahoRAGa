@@ -6,6 +6,7 @@ import os
 import platform
 import logging
 import threading
+from functools import lru_cache
 from . import embeddings as emb
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -227,6 +228,85 @@ def init_schema(conn: kuzu.Connection) -> None:
     if "ATTACHED_TO" not in existing_rel_tables:
         conn.execute("CREATE REL TABLE ATTACHED_TO(FROM Artifact TO Error)")
 
+    if "Agent" not in existing_node_tables:
+        conn.execute(
+            """
+            CREATE NODE TABLE Agent(
+                id STRING,
+                name STRING,
+                platform STRING,
+                team STRING,
+                created_at STRING,
+                PRIMARY KEY (id)
+            )
+            """
+        )
+
+    if "Model" not in existing_node_tables:
+        conn.execute(
+            """
+            CREATE NODE TABLE Model(
+                id STRING,
+                provider STRING,
+                name STRING,
+                version STRING,
+                created_at STRING,
+                PRIMARY KEY (id)
+            )
+            """
+        )
+
+    if "AgentRun" not in existing_node_tables:
+        conn.execute(
+            """
+            CREATE NODE TABLE AgentRun(
+                id STRING,
+                agent_id STRING,
+                model_id STRING,
+                client STRING,
+                workspace STRING,
+                started_at STRING,
+                ended_at STRING,
+                metadata_json STRING,
+                created_at STRING,
+                PRIMARY KEY (id)
+            )
+            """
+        )
+
+    if "ActionEvent" not in existing_node_tables:
+        conn.execute(
+            """
+            CREATE NODE TABLE ActionEvent(
+                id STRING,
+                timestamp STRING,
+                operation STRING,
+                target_type STRING,
+                target_id STRING,
+                project_id STRING,
+                status STRING,
+                error STRING,
+                metadata_json STRING,
+                agent_id STRING,
+                model_id STRING,
+                run_id STRING,
+                PRIMARY KEY (id)
+            )
+            """
+        )
+
+    if "RUN_BY" not in existing_rel_tables:
+        conn.execute("CREATE REL TABLE RUN_BY(FROM AgentRun TO Agent)")
+
+    if "USES_MODEL" not in existing_rel_tables:
+        conn.execute("CREATE REL TABLE USES_MODEL(FROM AgentRun TO Model)")
+
+    if "IN_RUN" not in existing_rel_tables:
+        conn.execute("CREATE REL TABLE IN_RUN(FROM ActionEvent TO AgentRun)")
+
+    if "AFFECTS_PROJECT" not in existing_rel_tables:
+        conn.execute("CREATE REL TABLE AFFECTS_PROJECT(FROM ActionEvent TO Project)")
+
 
 def _result_to_dicts(result) -> list[dict]:
     rows = []
@@ -276,6 +356,302 @@ def _to_utc_iso(value: datetime) -> str:
 
 def _parse_iso_datetime(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+REQUIRED_PROVENANCE_KEYS = (
+    "agent_id",
+    "agent_name",
+    "model_id",
+    "model_name",
+    "provider",
+)
+
+
+@lru_cache(maxsize=1)
+def get_allowed_agent_names() -> set[str]:
+    env_agents = os.getenv("MAHORAGA_ALLOWED_AGENTS", "").strip()
+    if env_agents:
+        return {name.strip() for name in env_agents.split(",") if name.strip()}
+
+    agents_dir = Path.home() / ".config" / "opencode" / "agents"
+    names: set[str] = set()
+    try:
+        if agents_dir.exists() and agents_dir.is_dir():
+            for file in agents_dir.iterdir():
+                if file.is_file() and file.suffix == ".md":
+                    names.add(file.stem)
+    except Exception:
+        return set()
+    return names
+
+
+def validate_provenance_context(actor_context: Optional[dict[str, Any]]) -> Optional[str]:
+    if not isinstance(actor_context, dict):
+        return "actor_context is required and must be an object"
+    missing = [k for k in REQUIRED_PROVENANCE_KEYS if not str(actor_context.get(k, "")).strip()]
+    if missing:
+        return f"actor_context missing required fields: {', '.join(missing)}"
+
+    agent_id = str(actor_context.get("agent_id", "")).strip()
+    agent_name = str(actor_context.get("agent_name", "")).strip()
+    allowed_agents = get_allowed_agent_names()
+    if not allowed_agents:
+        return "No configured agents found in ~/.config/opencode/agents"
+    if agent_id != agent_name:
+        return "actor_context agent_id and agent_name must match an opencode agent name"
+    if agent_id not in allowed_agents:
+        return f"agent '{agent_id}' is not allowed. Use one of: {', '.join(sorted(allowed_agents))}"
+    return None
+
+
+def _ensure_agent(conn: kuzu.Connection, actor_context: dict[str, Any]) -> str:
+    agent_id = str(actor_context["agent_id"])
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        MERGE (a:Agent {id: $id})
+        SET a.name = $name,
+            a.platform = $platform,
+            a.team = $team,
+            a.created_at = COALESCE(a.created_at, $created_at)
+        """,
+        {
+            "id": agent_id,
+            "name": str(actor_context.get("agent_name", "")),
+            "platform": str(actor_context.get("platform", "")),
+            "team": str(actor_context.get("team", "")),
+            "created_at": now,
+        },
+    )
+    return agent_id
+
+
+def _ensure_model(conn: kuzu.Connection, actor_context: dict[str, Any]) -> str:
+    model_id = str(actor_context["model_id"])
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        MERGE (m:Model {id: $id})
+        SET m.provider = $provider,
+            m.name = $name,
+            m.version = $version,
+            m.created_at = COALESCE(m.created_at, $created_at)
+        """,
+        {
+            "id": model_id,
+            "provider": str(actor_context.get("provider", "")),
+            "name": str(actor_context.get("model_name", "")),
+            "version": str(actor_context.get("model_version", "")),
+            "created_at": now,
+        },
+    )
+    return model_id
+
+
+def _ensure_agent_run(
+    conn: kuzu.Connection,
+    actor_context: dict[str, Any],
+    agent_id: str,
+    model_id: str,
+) -> str:
+    run_id = str(actor_context.get("run_id") or uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        MERGE (r:AgentRun {id: $id})
+        SET r.agent_id = $agent_id,
+            r.model_id = $model_id,
+            r.client = $client,
+            r.workspace = $workspace,
+            r.started_at = COALESCE(r.started_at, $started_at),
+            r.ended_at = $ended_at,
+            r.metadata_json = $metadata_json,
+            r.created_at = COALESCE(r.created_at, $created_at)
+        """,
+        {
+            "id": run_id,
+            "agent_id": agent_id,
+            "model_id": model_id,
+            "client": str(actor_context.get("client", "")),
+            "workspace": str(actor_context.get("workspace", "")),
+            "started_at": str(actor_context.get("started_at", now)),
+            "ended_at": str(actor_context.get("ended_at", "")),
+            "metadata_json": json.dumps(actor_context.get("run_metadata", {})),
+            "created_at": now,
+        },
+    )
+    conn.execute(
+        "MATCH (r:AgentRun {id: $rid}), (a:Agent {id: $aid}) MERGE (r)-[:RUN_BY]->(a)",
+        {"rid": run_id, "aid": agent_id},
+    )
+    conn.execute(
+        "MATCH (r:AgentRun {id: $rid}), (m:Model {id: $mid}) MERGE (r)-[:USES_MODEL]->(m)",
+        {"rid": run_id, "mid": model_id},
+    )
+    return run_id
+
+
+def log_action_event(
+    conn: kuzu.Connection,
+    actor_context: dict[str, Any],
+    operation: str,
+    target_type: str,
+    target_id: str,
+    project_id: Optional[str] = None,
+    status: str = "completed",
+    error: str = "",
+    metadata: Optional[dict[str, Any]] = None,
+) -> str:
+    validation_error = validate_provenance_context(actor_context)
+    if validation_error:
+        raise ValueError(validation_error)
+
+    agent_id = _ensure_agent(conn, actor_context)
+    model_id = _ensure_model(conn, actor_context)
+    run_id = _ensure_agent_run(conn, actor_context, agent_id, model_id)
+
+    event_id = str(uuid.uuid4())
+    timestamp = str(actor_context.get("timestamp") or datetime.now(timezone.utc).isoformat())
+    conn.execute(
+        """
+        CREATE (:ActionEvent {
+            id: $id,
+            timestamp: $timestamp,
+            operation: $operation,
+            target_type: $target_type,
+            target_id: $target_id,
+            project_id: $project_id,
+            status: $status,
+            error: $error,
+            metadata_json: $metadata_json,
+            agent_id: $agent_id,
+            model_id: $model_id,
+            run_id: $run_id
+        })
+        """,
+        {
+            "id": event_id,
+            "timestamp": timestamp,
+            "operation": operation,
+            "target_type": target_type,
+            "target_id": target_id,
+            "project_id": project_id or "",
+            "status": status,
+            "error": error,
+            "metadata_json": json.dumps(metadata or {}),
+            "agent_id": agent_id,
+            "model_id": model_id,
+            "run_id": run_id,
+        },
+    )
+    conn.execute(
+        "MATCH (e:ActionEvent {id: $eid}), (r:AgentRun {id: $rid}) MERGE (e)-[:IN_RUN]->(r)",
+        {"eid": event_id, "rid": run_id},
+    )
+    if project_id:
+        conn.execute(
+            "MATCH (e:ActionEvent {id: $eid}), (p:Project {id: $pid}) MERGE (e)-[:AFFECTS_PROJECT]->(p)",
+            {"eid": event_id, "pid": project_id},
+        )
+    return event_id
+
+
+def _parse_event_rows(rows: list[dict]) -> list[dict]:
+    for row in rows:
+        row["metadata"] = _parse_json_field(row.get("metadata_json"), default={})
+        row.pop("metadata_json", None)
+    return rows
+
+
+def get_agent_activity(
+    conn: kuzu.Connection,
+    agent_id: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> dict:
+    result = conn.execute("MATCH (a:Agent {id: $id}) RETURN a.*", {"id": agent_id})
+    agents = _result_to_dicts(result)
+    if not agents:
+        return {"error": f"Agent {agent_id} not found"}
+
+    query = "MATCH (e:ActionEvent {agent_id: $agent_id}) RETURN e.* ORDER BY e.timestamp DESC"
+    events = _result_to_dicts(conn.execute(query, {"agent_id": agent_id}))
+    if start_date:
+        events = [e for e in events if str(e.get("timestamp", "")) >= start_date]
+    if end_date:
+        events = [e for e in events if str(e.get("timestamp", "")) <= end_date]
+    return {"agent": agents[0], "events": _parse_event_rows(events), "count": len(events)}
+
+
+def get_model_activity(
+    conn: kuzu.Connection,
+    model_id: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> dict:
+    result = conn.execute("MATCH (m:Model {id: $id}) RETURN m.*", {"id": model_id})
+    models = _result_to_dicts(result)
+    if not models:
+        return {"error": f"Model {model_id} not found"}
+
+    events = _result_to_dicts(
+        conn.execute(
+            "MATCH (e:ActionEvent {model_id: $model_id}) RETURN e.* ORDER BY e.timestamp DESC",
+            {"model_id": model_id},
+        )
+    )
+    if start_date:
+        events = [e for e in events if str(e.get("timestamp", "")) >= start_date]
+    if end_date:
+        events = [e for e in events if str(e.get("timestamp", "")) <= end_date]
+    return {"model": models[0], "events": _parse_event_rows(events), "count": len(events)}
+
+
+def get_action_timeline(
+    conn: kuzu.Connection,
+    project_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    model_id: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict:
+    safe_limit = max(1, int(limit))
+    safe_offset = max(0, int(offset))
+    events = _result_to_dicts(
+        conn.execute(
+            "MATCH (e:ActionEvent) RETURN e.* ORDER BY e.timestamp DESC SKIP $offset LIMIT $limit",
+            {"offset": safe_offset, "limit": safe_limit},
+        )
+    )
+    if project_id:
+        events = [e for e in events if e.get("project_id") == project_id]
+    if agent_id:
+        events = [e for e in events if e.get("agent_id") == agent_id]
+    if model_id:
+        events = [e for e in events if e.get("model_id") == model_id]
+    if since:
+        events = [e for e in events if str(e.get("timestamp", "")) >= since]
+    if until:
+        events = [e for e in events if str(e.get("timestamp", "")) <= until]
+    return {"events": _parse_event_rows(events), "count": len(events)}
+
+
+def get_entity_provenance(
+    conn: kuzu.Connection, target_type: str, target_id: str, limit: int = 100
+) -> dict:
+    safe_limit = max(1, int(limit))
+    rows = _result_to_dicts(
+        conn.execute(
+            """
+            MATCH (e:ActionEvent {target_type: $target_type, target_id: $target_id})
+            RETURN e.* ORDER BY e.timestamp DESC LIMIT $limit
+            """,
+            {"target_type": target_type, "target_id": target_id, "limit": safe_limit},
+        )
+    )
+    return {"events": _parse_event_rows(rows), "count": len(rows)}
 
 
 def add_project(conn: kuzu.Connection, name: str, path: str, description: str = "") -> str:

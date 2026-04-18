@@ -7,6 +7,42 @@ from src.tools import register_tools
 async def _call_tool_fn(mcp: FastMCP, name: str, *args, **kwargs):
     tool = await mcp.get_tool(name)
     assert tool is not None
+    strict_mutating_tools = {
+        "add_project",
+        "add_session",
+        "close_session",
+        "log_error",
+        "log_solution",
+        "add_concept",
+        "link_concept_to_session",
+        "update_concept",
+        "delete_concept",
+        "update_project",
+        "delete_old_sessions",
+        "update_session_summary",
+        "add_tag_to_concept",
+        "remove_tag_from_concept",
+        "delete_project",
+        "batch_add_concepts",
+        "batch_link_concepts",
+        "unlink_concept_from_session",
+        "delete_session",
+        "update_daily_activity",
+        "add_artifact",
+        "update_artifact",
+        "delete_artifact",
+        "link_artifact",
+        "unlink_artifact_from_session",
+    }
+    if name in strict_mutating_tools and "actor_context" not in kwargs:
+        kwargs["actor_context"] = {
+            "agent_id": "build",
+            "agent_name": "build",
+            "model_id": "test-model",
+            "model_name": "Test Model",
+            "provider": "pytest",
+            "run_id": "test-run",
+        }
     return tool.fn(*args, **kwargs)
 
 
@@ -103,6 +139,18 @@ async def test_input_validation_for_core_tools(test_connection):
 
     bad_artifact_type = await _call_tool_fn(mcp, "list_artifacts", "banana", 5, 0)
     assert "error" in bad_artifact_type
+
+
+@pytest.mark.asyncio
+async def test_strict_provenance_requires_actor_context(test_connection):
+    mcp = FastMCP("test")
+    register_tools(mcp)
+
+    tool = await mcp.get_tool("add_project")
+    assert tool is not None
+    missing_ctx = tool.fn("proj-no-ctx", "/tmp/proj-no-ctx", "desc")
+    assert "error" in missing_ctx
+    assert "actor_context" in missing_ctx["error"]
 
 
 @pytest.mark.asyncio
