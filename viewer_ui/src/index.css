@@ -1,0 +1,118 @@
+:root {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --bg-elevated: #30363d;
+  --text-primary: #f0f6fc;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --accent-primary: #58a6ff;
+  --accent-secondary: #388bfd;
+  --accent-subtle: rgba(56, 139, 253, 0.15);
+  --border-default: #30363d;
+  --border-muted: #21262d;
+  --success: #3fb950;
+  --warning: #d29922;
+  --error: #f85149;
+  --node-session: #a371f7;
+  --node-concept: #58a6ff;
+  --node-error: #f85149;
+  --node-artifact: #3fb950;
+  --font-mono: 'IBM Plex Mono', monospace;
+  --font-sans: 'Inter', sans-serif;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+#root {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-elevated);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-default);
+}
+
+/* Loading animation */
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.loading-pulse {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.loading-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Focus states */
+*:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+/* Button reset */
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+}
+
+/* Input reset */
+input {
+  font-family: inherit;
+  border: none;
+  background: none;
+  color: inherit;
+}
+
+input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Select reset */
+select {
+  font-family: inherit;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}

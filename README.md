@@ -16,12 +16,42 @@
 
 ## Why MahoRAGa?
 
-Every AI agent session starts **cold** — no memory of past errors, solutions, or project context. MahoRAGa fixes that by providing a **local graph database** that agents can read and write to across sessions, creating a living knowledge base that grows smarter over time.
+If you've ever watched an AI agent solve the same bug twice, you already know the pain this project solves.
+
+MahoRAGa gives your agents a long-term memory they can actually use: past errors, fixes, concepts, and artifacts stay connected in a local graph so future sessions can build on previous work instead of starting from zero.
 
 - 🔁 **Never solve the same bug twice.** Errors and solutions are persisted and semantically searchable.
 - 🧩 **Cross-project knowledge.** Concepts learned in one project are instantly available in others.
 - 📊 **Activity intelligence.** Daily summaries, session histories, and project timelines — all queryable.
 - 🔒 **100% local.** Your data never leaves your machine. No API keys, no cloud dependencies.
+
+---
+
+## Visual Viewer (Browser)
+
+If you prefer to inspect memory visually, there's now a separate local viewer stack:
+
+- `viewer_api/` → read-only API for graph data
+- `viewer_ui/` → interactive browser UI (zoom, pan, drag, search, node details)
+
+Run backend:
+
+```bash
+source .venv/bin/activate
+uvicorn viewer_api.main:app --host 127.0.0.1 --port 8090 --reload
+```
+
+Run frontend:
+
+```bash
+cd viewer_ui
+npm install
+npm run dev
+```
+
+Open:
+
+`http://127.0.0.1:5173`
 
 ---
 
